@@ -150,11 +150,25 @@ def main():
         breakout_bars=20,
         reversal_min_run=5,
     )
-    movements = detector.detect(df)
+    all_movements = detector.detect(df)
     if movement_types:
-        movements = [m for m in movements if m.move_type in movement_types]
-    movements = [m for m in movements if abs(m.magnitude_pct) >= min_move_pct]
-    print(f"  Detected {len(movements)} movements")
+        all_movements = [m for m in all_movements if m.move_type in movement_types]
+
+    # Auto-Kalibrierung: optimalen min_move_pct für diesen Coin + Timeframe finden
+    _user_set_threshold = args.min_move_pct is not None or 'min_move_pct' in settings
+    if not _user_set_threshold:
+        min_move_pct, _median_atr, _calib = _auto_calibrate_min_move(df, all_movements)
+        chosen_label = _best_calib_label(_calib, min_move_pct)
+        print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%):")
+        for _t, _n, _good, _score in _calib:
+            _marker = '→' if _t == min_move_pct else ' '
+            print(f"  {_marker} {_t:.1f}%: {_n:3d} Events, {_good} Typen ≥15 Events")
+        print(f"  Gewählt: min_move_pct = {min_move_pct}%  [{chosen_label}]")
+    else:
+        print(f"  min_move_pct = {min_move_pct}% (manuell)")
+
+    movements = [m for m in all_movements if abs(m.magnitude_pct) >= min_move_pct]
+    print(f"  Detected {len(movements)} movements (≥{min_move_pct}%)")
 
     rpt.print_header(symbol, timeframe, start_date, end_date, len(movements))
     rpt.print_movement_summary(movements)
@@ -502,6 +516,58 @@ def _run_live(
 
     db.close()
     print("\n[LIVE] Fertig.")
+
+
+def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct'):
+    """
+    Findet optimalen min_move_pct für diesen Coin + Timeframe.
+    Strategie: ATR-basierte Kandidaten + feste Ladder → Score nach
+    Typen mit ≥15 Events (statistische Signifikanz) minus Rausch-Penalty.
+    """
+    from collections import Counter
+
+    median_atr = float(df[atr_col].median()) if atr_col in df.columns else 1.5
+
+    # ATR-Multiples + feste Werte, dedupliziert und in [0.3, 15.0]
+    atr_multiples = [round(median_atr * m, 1) for m in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)]
+    fixed = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5]
+    candidates = sorted({round(c, 1) for c in atr_multiples + fixed if 0.3 <= c <= 15.0})
+
+    best_threshold = round(median_atr * 1.5, 1) or 1.5
+    best_score = -999
+    results = []
+
+    for t in candidates:
+        filtered = [m for m in all_movements if abs(m.magnitude_pct) >= t]
+        if not filtered:
+            continue
+        type_counts = Counter(m.move_type for m in filtered)
+        total = len(filtered)
+        types_enough = sum(1 for c in type_counts.values() if c >= 15)
+        types_ideal  = sum(1 for c in type_counts.values() if 15 <= c <= 120)
+
+        # Mehr Typen mit ausreichend Daten = besser; Rauschen und Leere bestrafen
+        noise_penalty   = max(0.0, (total - 250) / 50) if total > 250 else 0.0
+        sparse_penalty  = max(0.0, (10 - total) * 2)   if total < 10  else 0.0
+        score = types_enough * 10 + types_ideal * 3 - noise_penalty - sparse_penalty
+
+        results.append((t, total, types_enough, score))
+        if score > best_score:
+            best_score = score
+            best_threshold = t
+
+    return best_threshold, median_atr, results
+
+
+def _best_calib_label(calib_results, chosen):
+    for t, n, good, score in calib_results:
+        if t == chosen:
+            if good >= 3:
+                return 'OPTIMAL'
+            if good >= 1:
+                return 'AUSREICHEND'
+            return 'WENIG DATEN'
+    return '?'
 
 
 def _fmt(val) -> str:
