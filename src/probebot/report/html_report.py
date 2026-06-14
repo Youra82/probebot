@@ -60,6 +60,8 @@ def generate_html_report(
             'top':   cdata.get('top_features', [])[:10],
         }
 
+    fazit = _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_count, movements)
+
     payload = {
         'symbol':    symbol,
         'timeframe': timeframe,
@@ -71,11 +73,236 @@ def generate_html_report(
         'move_stats': move_stats,
         'correlations': corr_data,
         'clusters':  cluster_data,
+        'fazit':     fazit,
     }
 
     html = _HTML_TEMPLATE.replace('__DATA_JSON__', json.dumps(payload, ensure_ascii=False))
     path.write_text(html, encoding='utf-8')
     return str(path)
+
+
+# ─── Fazit Engine ────────────────────────────────────────────────────────────
+
+_MOMENTUM_FEATS   = {'momentum_score','rsi_14','rsi_7','rsi_21','stoch_k','stoch_d','willr_14','cci_20','roc_10','roc_5','roc_20','macd_hist','kalman_vel','velocity','dist_ema_9','dist_ema_21'}
+_VOLUME_FEATS     = {'cvd','cvd_slope','obv_z','obv_slope','buy_pressure','sell_pressure','vol_confirm','volume_z','volume_ratio','mfi_14','cum_pressure_slope','mfi_divergence'}
+_STRUCTURE_FEATS  = {'struct_hh','struct_hl','struct_lh','struct_ll','breakout_up_10','breakout_up_20','breakout_down_10','breakout_down_20','donchian_pos','bb_position','range_position_50','at_donchian_high','at_donchian_low','fvg_bull','fvg_bear','bull_ob','bear_ob','ichi_above_cloud'}
+_COMPLEXITY_FEATS = {'entropy_10','entropy_20','entropy_40','hurst_30','hurst_60','hurst_100','higuchi_fd','dfa_alpha','variance_ratio','wpi','memory_pressure','cct','lyapunov','ear_entropy','autocorr_1','realized_vol_20','atr_pct','entropy_squeeze'}
+
+_STRATEGY_NAMES = {
+    'MOMENTUM':    ('⚡ Momentum',   '#f5a623', 'Kaufe/Verkaufe wenn Momentum bereits läuft — kein antizyklischer Entry.'),
+    'BREAKOUT':    ('🧱 Breakout',   '#58a6ff', 'Warte auf Ausbruch aus Konsolidierung mit Volume-Bestätigung.'),
+    'MEAN_REV':    ('🔄 Mean-Reversion','#ce93d8','Fade Extrembewegungen — Preis kehrt zum Mittelwert zurück.'),
+    'SQUEEZE':     ('⚡ Squeeze-Release','#26a69a','Warte auf Volatilitätskompression → Ausbruch in eine Richtung.'),
+    'ORDERFLOW':   ('🏦 Order Flow', '#64b5f6', 'CVD/OBV-Divergenz als primäres Signal — institutioneller Kaufdruck.'),
+    'COMPLEXITY':  ('🌀 Regime',     '#80cbc4', 'Entropy & Hurst als Filter — nur handeln wenn Regime passt.'),
+    'HYBRID':      ('🔀 Hybrid',     '#aaa',    'Kombination mehrerer Ansätze — kein klares dominantes Muster.'),
+}
+
+def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_count, movements):
+    total = sum(s['n'] for s in move_stats.values()) or 1
+    coin  = symbol.split('/')[0]
+
+    # ── 1. Bewegungstyp-Verteilung ────────────────────────────────────────────
+    def _n(*keys): return sum(move_stats.get(k,{}).get('n',0) for k in keys)
+    impulse_n  = _n('IMPULSE_DOWN','IMPULSE_UP')
+    breakdown_n= _n('BREAKDOWN','BREAKOUT_UP')
+    reversal_n = _n('REVERSAL_DOWN','REVERSAL_UP')
+    squeeze_n  = _n('SQUEEZE_RELEASE_DOWN','SQUEEZE_RELEASE_UP')
+    accel_n    = _n('ACCELERATION_DOWN','ACCELERATION_UP')
+
+    # ── 2. Prädiktoren-Kategorien zählen (nur starke: |t|>=4, hit>=35) ────────
+    cat_scores = {'MOMENTUM':0,'BREAKOUT':0,'MEAN_REV':0,'SQUEEZE':0,'ORDERFLOW':0,'COMPLEXITY':0}
+    best_signals = []   # {feature, mtype, t, hit, direction, category}
+    all_warnings = []
+
+    for mtype, ranked in correlations.items():
+        n_events = move_stats.get(mtype, {}).get('n', 0)
+        if n_events < 8:
+            all_warnings.append(f"<b>{mtype}</b>: nur {n_events} Events — statistisch schwach (≥15 empfohlen)")
+
+        for r in ranked:
+            t   = r.get('t', r.get('t_statistic', 0))
+            hit = r.get('hit', r.get('predictive_pct', 0))
+            feat= r.get('feature','')
+            if abs(t) < 4.0 or hit < 35:
+                continue
+            direction = 'erhöht' if t > 0 else 'erniedrigt'
+            # Kategorie
+            cat = None
+            if feat in _MOMENTUM_FEATS:   cat = 'MOMENTUM'
+            elif feat in _VOLUME_FEATS:   cat = 'ORDERFLOW'
+            elif feat in _STRUCTURE_FEATS:cat = 'BREAKOUT'
+            elif feat in _COMPLEXITY_FEATS:cat='COMPLEXITY'
+            if cat:
+                cat_scores[cat] += abs(t) * (hit/100)
+            # Signal sammeln
+            if abs(t) >= 5 and hit >= 45:
+                best_signals.append({'feature':feat,'mtype':mtype,'t':round(t,2),'hit':round(hit,1),'direction':direction,'cat':cat or 'OTHER'})
+
+    # Squeeze Sonderregel
+    if squeeze_n / total > 0.10:
+        cat_scores['SQUEEZE'] += squeeze_n * 2
+
+    # Mean-Reversion: wenn hurst oder variance_ratio dominiert
+    for mtype, ranked in correlations.items():
+        for r in ranked[:15]:
+            if r.get('feature','') in ('hurst_30','hurst_60','variance_ratio','autocorr_1'):
+                cat_scores['MEAN_REV'] += abs(r.get('t', r.get('t_statistic',0))) * 0.5
+
+    # ── 3. Strategie-Typ bestimmen ────────────────────────────────────────────
+    # Gewichtung: Bewegungstypen + Feature-Kategorie
+    type_scores = {
+        'MOMENTUM':  (impulse_n + accel_n) / total * 100 + cat_scores['MOMENTUM'],
+        'BREAKOUT':  breakdown_n / total * 100 + cat_scores['BREAKOUT'],
+        'MEAN_REV':  reversal_n / total * 100 + cat_scores['MEAN_REV'],
+        'SQUEEZE':   squeeze_n / total * 100 + cat_scores['SQUEEZE'],
+        'ORDERFLOW': cat_scores['ORDERFLOW'],
+        'COMPLEXITY':cat_scores['COMPLEXITY'],
+    }
+    strategy = max(type_scores, key=lambda k: type_scores[k])
+    # Kein klarer Gewinner → Hybrid
+    top2 = sorted(type_scores.values(), reverse=True)[:2]
+    if top2[0] > 0 and top2[1] / top2[0] > 0.75:
+        strategy = 'HYBRID'
+    confidence = min(100, int(top2[0]))
+
+    # ── 4. Richtungs-Bias ─────────────────────────────────────────────────────
+    ratio = up_count / (dn_count or 1)
+    if ratio > 1.35:
+        bias = 'LONG'
+        bias_text = f'Long-Bias ({up_count} UP vs {dn_count} DOWN) — Markt tendierte in diesem Zeitraum aufwärts'
+        bias_color= '#26a69a'
+    elif ratio < 0.74:
+        bias = 'SHORT'
+        bias_text = f'Short-Bias ({dn_count} DOWN vs {up_count} UP) — Markt tendierte in diesem Zeitraum abwärts'
+        bias_color= '#ef5350'
+    else:
+        bias = 'NEUTRAL'
+        bias_text = f'Neutral ({up_count} UP / {dn_count} DOWN) — kein klarer Richtungs-Bias'
+        bias_color= '#8b949e'
+
+    # ── 5. Beste Signale deduplizieren & ranken ────────────────────────────────
+    seen = set()
+    top_signals = []
+    for s in sorted(best_signals, key=lambda x: -(x['hit'] * abs(x['t']))):
+        key = (s['feature'], s['mtype'])
+        if key not in seen:
+            seen.add(key)
+            top_signals.append(s)
+        if len(top_signals) >= 8:
+            break
+
+    # ── 6. Coin-Charakteristik ────────────────────────────────────────────────
+    mags_all = [abs(m.magnitude_pct) for m in movements]
+    avg_mag = round(sum(mags_all)/len(mags_all), 2) if mags_all else 0
+    max_mag = round(max(mags_all), 2) if mags_all else 0
+    volatility = 'HOCH' if avg_mag > 5 else 'MITTEL' if avg_mag > 2.5 else 'NIEDRIG'
+    vol_color  = '#ef5350' if volatility=='HOCH' else '#f5a623' if volatility=='MITTEL' else '#26a69a'
+
+    # ── 7. Empfehlungen generieren ────────────────────────────────────────────
+    recs = []
+    strat_name, strat_color, strat_desc = _STRATEGY_NAMES[strategy]
+
+    if strategy == 'MOMENTUM':
+        recs.append(f'Entry nur wenn Momentum bereits läuft — nicht gegen den Trend kaufen')
+        if any(s['feature']=='momentum_score' for s in top_signals):
+            recs.append(f'<code>momentum_score</code> ist stärkster Prädiktor — als primärer Filter nutzen')
+        if any(s['feature'] in ('stoch_k','willr_14') for s in top_signals):
+            recs.append(f'<code>stoch_k</code> / <code>willr_14</code> > 60 für Long, < 40 für Short als Einstiegssignal')
+        recs.append(f'Trendfolge-Bot empfohlen — kein Mean-Reversion-Ansatz')
+
+    elif strategy == 'BREAKOUT':
+        recs.append(f'Warte auf Konsolidierung + Ausbruch — kein impulsiver Entry')
+        if any(s['feature'] in ('bb_position','donchian_pos') for s in top_signals):
+            recs.append(f'<code>bb_position</code> / <code>donchian_pos</code> > 0.8 bestätigt Ausbruch')
+        recs.append(f'Volume-Bestätigung beim Ausbruch prüfen (<code>volume_z</code> > 1.0)')
+        recs.append(f'SL knapp unter Ausbruchsniveau setzen')
+
+    elif strategy == 'MEAN_REV':
+        recs.append(f'Antizyklischer Entry bei Extremwerten — Geduld ist Key')
+        recs.append(f'Hurst-Exponent < 0.45 als Pflicht-Filter vor jedem Entry')
+        recs.append(f'RSI-Extremwerte (< 25 Long / > 75 Short) mit Volume-Bestätigung kombinieren')
+        recs.append(f'Vorsicht: Mean-Reversion versagt in starken Trends — ADX < 25 als Filter')
+
+    elif strategy == 'SQUEEZE':
+        recs.append(f'Warte auf Bollinger-Band Kompression (bb_width auf Tiefstand)')
+        recs.append(f'<code>entropy_squeeze</code> = 1 signalisiert aufgebaute Spannung')
+        recs.append(f'Richtung beim Ausbruch bestimmt die Trade-Richtung — kein vorheriger Bias')
+
+    elif strategy == 'ORDERFLOW':
+        recs.append(f'CVD-Divergenz als primäres Entry-Signal (Preis steigt, CVD fällt = Warnung)')
+        recs.append(f'<code>cum_pressure_slope</code> > 0 für Long, < 0 für Short')
+        recs.append(f'Institutionelle Order Blocks (<code>bull_ob</code>/<code>bear_ob</code>) als SL-Level nutzen')
+
+    elif strategy == 'COMPLEXITY':
+        recs.append(f'Regime-Filter vor jedem Trade: nur handeln wenn Hurst > 0.5 (Trend) oder < 0.45 (Mean-Rev)')
+        recs.append(f'Entropy-Anstieg = Chaos kommt — Position reduzieren')
+        recs.append(f'Kombination Hurst + Entropy als Regime-Detektor für anderen Bot nutzen')
+
+    else:  # HYBRID
+        recs.append(f'Kein dominantes Muster erkennbar — Multi-Signal-Ansatz verwenden')
+        recs.append(f'Mindestens 3 Signale verschiedener Kategorien für Entry kombinieren')
+        recs.append(f'Backtesting mit verschiedenen Strategie-Typen empfohlen')
+
+    # Allgemeine Empfehlungen
+    if volatility == 'HOCH':
+        recs.append(f'Hohe Volatilität (⌀ {avg_mag}% pro Move) — kleinere Positionsgrößen empfohlen')
+    if bias != 'NEUTRAL':
+        recs.append(f'{bias}-Bias beachten — Gegen-Trend Trades statistisch schwächer')
+
+    # ── 8. Per-Move-Typ Mini-Fazit ────────────────────────────────────────────
+    per_type = {}
+    for mtype, ranked in correlations.items():
+        n = move_stats.get(mtype, {}).get('n', 0)
+        if n < 3:
+            continue
+        strong = [r for r in ranked if abs(r.get('t', r.get('t_statistic',0))) >= 4 and r.get('hit', r.get('predictive_pct',0)) >= 40][:3]
+        if not strong:
+            continue
+        signals = []
+        for r in strong:
+            t    = r.get('t', r.get('t_statistic',0))
+            feat = r.get('feature','')
+            hit  = r.get('hit', r.get('predictive_pct',0))
+            before = r.get('before', r.get('mean_before',0))
+            op = '>' if t > 0 else '<'
+            signals.append(f'<code>{feat}</code> {op} {_fmt_val(before)} (Hit {hit:.0f}%)')
+
+        direction = 'LONG' if 'UP' in mtype or 'BREAKOUT' in mtype else 'SHORT'
+        per_type[mtype] = {
+            'direction': direction,
+            'n': n,
+            'signals': signals,
+            'avg_mag': move_stats.get(mtype,{}).get('avg_mag', 0),
+        }
+
+    return {
+        'strategy':     strategy,
+        'strat_name':   strat_name,
+        'strat_color':  strat_color,
+        'strat_desc':   strat_desc,
+        'confidence':   confidence,
+        'bias':         bias,
+        'bias_text':    bias_text,
+        'bias_color':   bias_color,
+        'volatility':   volatility,
+        'vol_color':    vol_color,
+        'avg_mag':      avg_mag,
+        'max_mag':      max_mag,
+        'top_signals':  top_signals,
+        'recommendations': recs,
+        'warnings':     all_warnings,
+        'per_type':     per_type,
+        'coin':         coin,
+        'type_scores':  {k: round(v, 1) for k, v in type_scores.items()},
+    }
+
+def _fmt_val(v):
+    try:
+        f = float(v)
+        return f'{f:.2f}' if abs(f) < 100 else f'{f:.0f}'
+    except:
+        return str(v)
 
 
 # ─── Feature-Beschreibungen ───────────────────────────────────────────────────
@@ -508,8 +735,120 @@ window.exportCSV = function(mtype) {
   a.click();
 };
 
+// ── Fazit Tab ─────────────────────────────────────────────────────────────────
+addTab('fazit','🎯 Fazit & Empfehlung', p => {
+  const F = D.fazit;
+  if(!F){ p.innerHTML='<div class="empty">Keine Fazit-Daten.</div>'; return; }
+
+  // Strategy score bars
+  const scoreEntries = Object.entries(F.type_scores||{}).sort((a,b)=>b[1]-a[1]);
+  const maxScore = scoreEntries[0]?.[1] || 1;
+  const scoreBars = scoreEntries.map(([k,v])=>{
+    const w = Math.round(v/maxScore*100);
+    const active = k===F.strategy;
+    const c = active ? F.strat_color : '#30363d';
+    return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <div style="width:120px;font-size:.8em;color:${active?F.strat_color:'#8b949e'};font-weight:${active?700:400}">${k}</div>
+      <div style="flex:1;background:#1c2128;border-radius:4px;height:10px">
+        <div style="width:${w}%;background:${c};height:10px;border-radius:4px;transition:width .3s"></div>
+      </div>
+      <div style="width:36px;text-align:right;font-size:.8em;color:${active?F.strat_color:'#888'}">${v}</div>
+    </div>`;
+  }).join('');
+
+  // Warnings
+  const warns = (F.warnings||[]).map(w=>
+    `<div style="background:#f5a62311;border:1px solid #f5a62344;border-radius:6px;padding:8px 12px;margin-bottom:6px;font-size:.83em">
+      ⚠️ ${w}
+    </div>`).join('') || '';
+
+  // Top signals
+  const catColors = {MOMENTUM:'#f5a623',BREAKOUT:'#58a6ff',ORDERFLOW:'#64b5f6',COMPLEXITY:'#80cbc4',MEAN_REV:'#ce93d8',OTHER:'#888'};
+  const sigRows = (F.top_signals||[]).map(s=>{
+    const c = s.t>0?'#26a69a':'#ef5350';
+    const cat_c = catColors[s.cat]||'#888';
+    return `<tr>
+      <td><span style="color:${cat_c};font-size:.75em;border:1px solid ${cat_c}44;padding:1px 6px;border-radius:4px">${s.cat}</span></td>
+      <td><span class="feat-name" data-tip="${FEAT_DESC[s.feature]||s.feature}" style="color:#e0e0e0">${s.feature}</span></td>
+      <td style="color:#8b949e;font-size:.82em">${s.mtype.replace(/_/g,' ')}</td>
+      <td style="color:${c};font-weight:700">${s.t>0?'+':''}${s.t}</td>
+      <td class="${s.hit>=60?'hit-high':s.hit>=40?'hit-mid':'hit-low'}">${s.hit}%</td>
+      <td style="color:#aaa;font-size:.82em">${s.direction}</td>
+    </tr>`;
+  }).join('');
+
+  // Recommendations
+  const recItems = (F.recommendations||[]).map(r=>
+    `<li style="margin-bottom:7px;color:#c9d1d9">${r}</li>`).join('');
+
+  // Per-type mini conclusions
+  const perTypeSections = Object.entries(F.per_type||{}).map(([mt,td])=>{
+    const c = mt.includes('UP')||mt.includes('BREAKOUT')?'#26a69a':'#ef5350';
+    const dir = td.direction==='LONG'?'▲ LONG':'▼ SHORT';
+    const sigs = td.signals.map(s=>`<li style="margin-bottom:4px">${s}</li>`).join('');
+    return `<div style="background:#1a1f2e;border:1px solid #30363d;border-left:3px solid ${c};border-radius:6px;padding:12px 14px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <span style="color:${c};font-weight:700;font-size:.88em">${mt.replace(/_/g,' ')}</span>
+        <span style="color:${c};font-size:.8em">${dir}</span>
+        <span style="color:#8b949e;font-size:.78em">${td.n} Events · ⌀ ${td.avg_mag}%</span>
+      </div>
+      <ul style="list-style:none;padding:0;font-size:.82em;color:#c9d1d9">${sigs}</ul>
+    </div>`;
+  }).join('');
+
+  p.innerHTML = `
+  <!-- Strategy Header -->
+  <div style="background:${F.strat_color}11;border:2px solid ${F.strat_color}44;border-radius:12px;padding:20px 24px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <div style="font-size:2em;font-weight:800;color:${F.strat_color}">${F.strat_name}</div>
+      <div style="background:${F.strat_color}22;color:${F.strat_color};border:1px solid ${F.strat_color}55;padding:3px 10px;border-radius:20px;font-size:.8em;font-weight:600">
+        Konfidenz ${F.confidence}%
+      </div>
+      <div style="background:${F.bias_color}22;color:${F.bias_color};border:1px solid ${F.bias_color}55;padding:3px 10px;border-radius:20px;font-size:.8em;font-weight:600">
+        ${F.bias}
+      </div>
+      <div style="background:#ef535022;color:#ef5350;border:1px solid #ef535044;padding:3px 10px;border-radius:20px;font-size:.8em;font-weight:600" title="Durchschnittliche Magnitude pro Bewegung">
+        Volatilität ${F.volatility} (⌀ ${F.avg_mag}%)
+      </div>
+    </div>
+    <div style="color:#aaa;margin-top:10px;font-size:.88em">${F.strat_desc}</div>
+    <div style="color:#8b949e;margin-top:4px;font-size:.82em">${F.bias_text}</div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+    <!-- Strategy Scores -->
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px">
+      <div style="color:#8b949e;font-size:.78em;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">Strategie-Scoring</div>
+      ${scoreBars}
+    </div>
+    <!-- Recommendations -->
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px">
+      <div style="color:#8b949e;font-size:.78em;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">💡 Empfehlungen</div>
+      <ul style="list-style:none;padding:0">${recItems}</ul>
+    </div>
+  </div>
+
+  ${warns ? `<div style="margin-bottom:16px"><div style="color:#8b949e;font-size:.78em;text-transform:uppercase;margin-bottom:8px">⚠️ Warnungen</div>${warns}</div>` : ''}
+
+  <!-- Top Signals -->
+  <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:20px;overflow:hidden">
+    <div style="padding:12px 16px;border-bottom:1px solid #21262d;color:#8b949e;font-size:.78em;text-transform:uppercase;letter-spacing:.05em">
+      🏆 Zuverlässigste Entry-Signale (|t| ≥ 5, Hit ≥ 45%)
+    </div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Kategorie</th><th>Feature</th><th>Bewegungstyp</th><th>t-Stat</th><th>Hit-Rate</th><th>Wert war</th></tr></thead>
+      <tbody>${sigRows || '<tr><td colspan="6" class="empty">Keine starken Signale (|t|≥5, Hit≥45%).</td></tr>'}</tbody>
+    </table></div>
+  </div>
+
+  <!-- Per-Type Conclusions -->
+  <div style="color:#8b949e;font-size:.78em;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">📋 Fazit pro Bewegungstyp</div>
+  ${perTypeSections || '<div class="empty">Keine ausreichenden Daten.</div>'}
+  `;
+});
+
 // ── Activate first tab ────────────────────────────────────────────────────────
-activateTab('overview');
+activateTab('fazit');
 </script>
 </body>
 </html>"""
