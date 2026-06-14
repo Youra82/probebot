@@ -157,17 +157,18 @@ def main():
     # Auto-Kalibrierung: optimalen min_move_pct für diesen Coin + Timeframe finden
     _user_set_threshold = args.min_move_pct is not None or 'min_move_pct' in settings
     if not _user_set_threshold:
-        _min_train_target = _MIN_TRAIN_BY_TF.get(timeframe, 20)
-        min_move_pct, _median_atr, _calib = _auto_calibrate_min_move(
-            df, all_movements, timeframe=timeframe
+        min_move_pct, _median_atr, _min_total, _years, _calib = _auto_calibrate_min_move(
+            df, all_movements, start_date=start_date, end_date=end_date
         )
-        chosen_label = _best_calib_label(_calib, min_move_pct)
-        print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%, Ziel: ≥{_min_train_target} Train-Events/Typ für {timeframe}):")
-        for _t, _n, _good, _score in _calib:
-            _train_est = int(_n * 0.70)
+        _chosen_n = next((n for t, n in _calib if t == min_move_pct), 0)
+        _label = _best_calib_label(_chosen_n, _min_total)
+        print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%, "
+              f"Zeitraum={_years:.1f}J, Ziel ≥{_min_total} Events):")
+        for _t, _n in _calib:
             _marker = '→' if _t == min_move_pct else ' '
-            print(f"  {_marker} {_t:.2f}%: {_n:3d} Events (~{_train_est} Train), {_good} Typen ≥{_min_train_target} Train")
-        print(f"  Gewählt: min_move_pct = {min_move_pct}%  [{chosen_label}]")
+            _flag = ' ✓' if _n >= _min_total else ''
+            print(f"  {_marker} {_t:.2f}%: {_n:4d} Events{_flag}")
+        print(f"  Gewählt: min_move_pct = {min_move_pct}%  [{_label}]")
     else:
         print(f"  min_move_pct = {min_move_pct}% (manuell)")
 
@@ -522,91 +523,61 @@ def _run_live(
     print("\n[LIVE] Fertig.")
 
 
-# Statistisch sinnvolles Minimum an Trainings-Events pro Bewegungstyp —
-# je kürzer der Timeframe, desto mehr Kerzen → desto höher das Minimum.
-_MIN_TRAIN_BY_TF = {
-    '1w':  8,
-    '3d': 10,
-    '1d': 15,
-    '12h': 18,
-    '6h': 20,
-    '4h': 25,
-    '2h': 28,
-    '1h': 35,
-    '30m': 40,
-    '15m': 50,
-    '5m':  60,
-    '3m':  70,
-    '1m':  80,
-}
+_MIN_EVENTS_PER_YEAR = 300  # Mindest-Events pro Jahr für statistische Relevanz
 
 
-def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct', train_split=0.70,
-                              timeframe='1d'):
+def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct',
+                              start_date='', end_date=''):
     """
-    Findet optimalen min_move_pct für diesen Coin + Timeframe.
-    Ziel: nach dem 70/30-Split mindestens _MIN_TRAIN_BY_TF[timeframe] Trainings-Events
-    pro Typ. Wenn das nicht erreichbar ist, den Schwellwert wählen der am nächsten
-    an diesem Minimum herankommt.
+    Findet optimalen min_move_pct für diesen Coin + Zeitraum.
+    Ziel: mindestens 300 Events pro Analysejahr.
+    Sucht den höchsten Schwellwert der dieses Minimum noch erreicht,
+    damit die Events so sauber/signifikant wie möglich sind.
+    Wenn kein Schwellwert ausreicht, wird der niedrigste genommen.
     """
-    import math
     from collections import Counter
+    from datetime import datetime
 
     median_atr = float(df[atr_col].median()) if atr_col in df.columns else 1.5
-    min_train  = _MIN_TRAIN_BY_TF.get(timeframe, 20)
-    # Gesamt-Events die nach dem Split ≥ min_train Trainings-Events ergeben
-    min_total  = int(math.ceil(min_train / train_split))
 
-    # ATR-Multiples + feste Werte, dedupliziert und in [0.1, 15.0]
-    atr_multiples = [round(median_atr * m, 1) for m in (0.3, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)]
-    fixed = [0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5]
-    candidates = sorted({round(c, 2) for c in atr_multiples + fixed if 0.1 <= c <= 15.0})
+    # Analysejahre berechnen
+    try:
+        t0 = datetime.strptime(start_date[:10], '%Y-%m-%d')
+        t1 = datetime.strptime(end_date[:10],   '%Y-%m-%d')
+        years = max((t1 - t0).days / 365.25, 0.25)
+    except Exception:
+        years = 1.0
+    min_total = int(_MIN_EVENTS_PER_YEAR * years)
 
-    best_threshold = candidates[len(candidates) // 2]
-    best_score = -999
+    # ATR-Multiples + feste Ladder, dedupliziert, in [0.05, 15.0]
+    atr_multiples = [round(median_atr * m, 2) for m in (0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)]
+    fixed = [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0]
+    candidates = sorted({round(c, 2) for c in atr_multiples + fixed if 0.05 <= c <= 15.0})
+
     results = []
-
     for t in candidates:
         filtered = [m for m in all_movements if abs(m.magnitude_pct) >= t]
-        if not filtered:
-            continue
-        type_counts = Counter(m.move_type for m in filtered)
         total = len(filtered)
+        results.append((t, total))
 
-        # Trainings-Events pro Typ (geschätzt)
-        train_counts = {mt: int(c * train_split) for mt, c in type_counts.items()}
-        types_at_min   = sum(1 for c in train_counts.values() if c >= min_train)
-        # Wie nah ist der schlechteste Typ am Ziel (20)?
-        closest_to_min = max(train_counts.values()) if train_counts else 0
+    # Höchsten Schwellwert wählen der noch ≥ min_total Events liefert
+    above = [(t, n) for t, n in results if n >= min_total]
+    if above:
+        best_threshold = above[-1][0]   # höchster Threshold mit ausreichend Events
+    else:
+        # Kein Threshold erreicht Minimum → niedrigsten nehmen (meiste Events)
+        best_threshold = results[0][0] if results else 0.5
 
-        # Rauschen (zu viele Events) und Leere bestrafen
-        noise_penalty  = max(0.0, (total - 350) / 50) if total > 350 else 0.0
-        sparse_penalty = max(0.0, (5 - total) * 5)    if total < 5   else 0.0
-
-        # Primär: Typen die das Minimum erreichen; Sekundär: Nähe zum Minimum
-        score = (types_at_min * 100
-                 + min(closest_to_min, min_train * 2)
-                 - noise_penalty - sparse_penalty)
-
-        results.append((t, total, types_at_min, closest_to_min, score))
-        if score > best_score:
-            best_score = score
-            best_threshold = t
-
-    # Ergebnisse für Ausgabe: (threshold, total, types_at_min, score)
-    display = [(t, n, g, s) for t, n, g, _, s in results]
-    return best_threshold, median_atr, display
+    return best_threshold, median_atr, min_total, years, results
 
 
-def _best_calib_label(calib_results, chosen):
-    for t, n, good, score in calib_results:
-        if t == chosen:
-            if good >= 3:
-                return 'OPTIMAL'
-            if good >= 1:
-                return 'AUSREICHEND'
-            return 'WENIG DATEN — Zeitraum/Symbol hat schlicht wenige Ereignisse'
-    return '?'
+def _best_calib_label(total, min_total):
+    ratio = total / min_total if min_total else 1
+    if ratio >= 1.0:
+        return 'OK'
+    if ratio >= 0.7:
+        return 'KNAPP'
+    return 'ZU WENIG DATEN'
 
 
 def _fmt(val) -> str:
