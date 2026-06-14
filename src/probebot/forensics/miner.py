@@ -109,22 +109,28 @@ class PatternMiner:
 
         # Build common feature set
         all_keys = sorted(set.union(*[ck for _, _, ck in candidates]))
-        target_vec = np.array([target_fv.get(k, 0.0) for k in all_keys]).reshape(1, -1)
+        target_vec = np.array([target_fv.get(k, 0.0) for k in all_keys], dtype=float).reshape(1, -1)
         cand_vecs = np.array([
-            [prec.get(k, 0.0) for k in all_keys]
+            [float(prec.get(k, 0.0)) if isinstance(prec.get(k, 0.0), (int, float)) else 0.0
+             for k in all_keys]
             for _, prec, _ in candidates
-        ])
+        ], dtype=float)
 
-        # Robust scaling
-        all_data = np.vstack([target_vec, cand_vecs])
-        scaler = RobustScaler()
-        try:
-            all_scaled = scaler.fit_transform(all_data)
-            target_scaled = all_scaled[0:1]
-            cand_scaled = all_scaled[1:]
-            sims = cosine_similarity(target_scaled, cand_scaled)[0]
-        except Exception:
+        # Replace NaN/inf with 0 before scaling
+        all_data = np.nan_to_num(np.vstack([target_vec, cand_vecs]), nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Drop constant columns — they contribute nothing to cosine similarity
+        col_stds = np.std(all_data, axis=0)
+        valid_cols = col_stds > 0
+        if valid_cols.sum() < 3:
             sims = np.zeros(len(candidates))
+        else:
+            all_data = all_data[:, valid_cols]
+            try:
+                all_scaled = RobustScaler().fit_transform(all_data)
+                sims = cosine_similarity(all_scaled[0:1], all_scaled[1:])[0]
+            except Exception:
+                sims = np.zeros(len(candidates))
 
         ranked = sorted(zip(sims, [c[0] for c in candidates]), key=lambda x: -x[0])
         result = []

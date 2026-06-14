@@ -70,10 +70,11 @@ TIMEFRAME="${TF_INPUT:-$DEFAULT_TF}"
 echo ""
 echo -e "${YELLOW}Historischer Zeitraum:${NC}"
 echo "  Empfehlung:"
-printf "  %-6s  %s\n" "1d:"  "2021-01-01 → heute  (4 Jahre, ~1500 Kerzen)"
-printf "  %-6s  %s\n" "4h:"  "2023-01-01 → heute  (2 Jahre, ~4000 Kerzen)"
-printf "  %-6s  %s\n" "1h:"  "2023-06-01 → heute  (1 Jahr,  ~8000 Kerzen)"
-printf "  %-6s  %s\n" "15m:" "2024-01-01 → heute  (6 Monate, ~10000 Kerzen)"
+printf "  %-6s  %s\n" "1d:"  "2021-01-01 → heute  (4.5 Jahre, ~1620 Kerzen)"
+printf "  %-6s  %s\n" "4h:"  "2021-01-01 → heute  (4.5 Jahre, ~9800 Kerzen)"
+printf "  %-6s  %s\n" "1h:"  "2021-01-01 → heute  (4.4 Jahre, ~35000 Kerzen)"
+printf "  %-6s  %s\n" "15m:" "2023-01-01 → heute  (2.5 Jahre, ~86000 Kerzen)"
+printf "  %-6s  %s\n" "5m:"  "2024-01-01 → heute  (1.5 Jahre, ~153000 Kerzen)"
 
 # Start-Default ist timeframe-adaptiv (Bitget limitiert historische Daten je TF)
 case "$TIMEFRAME" in
