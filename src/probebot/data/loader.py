@@ -92,15 +92,32 @@ class DataLoader:
 
         all_candles = []
         since = since_ms
-        while since < until_ms:
-            candles = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=1000)
-            if not candles:
-                break
-            all_candles.extend(candles)
-            last_ts = candles[-1][0]
-            if last_ts >= until_ms:
-                break
-            since = last_ts + 1
+
+        # Versuche mit Original-Symbol (Perpetual-Futures)
+        _symbols_to_try = [symbol]
+        # Fallback: Spot-Symbol (ADA/USDT:USDT → ADA/USDT)
+        # Bitget liefert für Perps historische Sub-Daily-Daten manchmal leer
+        if ':' in symbol:
+            _symbols_to_try.append(symbol.split(':')[0])
+
+        for _sym in _symbols_to_try:
+            _since = since_ms
+            _candles = []
+            try:
+                while _since < until_ms:
+                    batch = self.exchange.fetch_ohlcv(_sym, timeframe, since=_since, limit=300)
+                    if not batch:
+                        break
+                    _candles.extend(batch)
+                    last_ts = batch[-1][0]
+                    if last_ts >= until_ms:
+                        break
+                    _since = last_ts + 1
+            except Exception:
+                pass
+            if _candles:
+                all_candles = _candles
+                break  # Erster Treffer reicht
 
         if not all_candles:
             return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
