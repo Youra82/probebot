@@ -157,13 +157,16 @@ def main():
     # Auto-Kalibrierung: optimalen min_move_pct für diesen Coin + Timeframe finden
     _user_set_threshold = args.min_move_pct is not None or 'min_move_pct' in settings
     if not _user_set_threshold:
-        min_move_pct, _median_atr, _calib = _auto_calibrate_min_move(df, all_movements)
+        _min_train_target = _MIN_TRAIN_BY_TF.get(timeframe, 20)
+        min_move_pct, _median_atr, _calib = _auto_calibrate_min_move(
+            df, all_movements, timeframe=timeframe
+        )
         chosen_label = _best_calib_label(_calib, min_move_pct)
-        print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%, Ziel: ≥20 Train-Events/Typ):")
+        print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%, Ziel: ≥{_min_train_target} Train-Events/Typ für {timeframe}):")
         for _t, _n, _good, _score in _calib:
             _train_est = int(_n * 0.70)
             _marker = '→' if _t == min_move_pct else ' '
-            print(f"  {_marker} {_t:.2f}%: {_n:3d} Events (~{_train_est} Train), {_good} Typen ≥20 Train")
+            print(f"  {_marker} {_t:.2f}%: {_n:3d} Events (~{_train_est} Train), {_good} Typen ≥{_min_train_target} Train")
         print(f"  Gewählt: min_move_pct = {min_move_pct}%  [{chosen_label}]")
     else:
         print(f"  min_move_pct = {min_move_pct}% (manuell)")
@@ -519,21 +522,40 @@ def _run_live(
     print("\n[LIVE] Fertig.")
 
 
-def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct', train_split=0.70):
+# Statistisch sinnvolles Minimum an Trainings-Events pro Bewegungstyp —
+# je kürzer der Timeframe, desto mehr Kerzen → desto höher das Minimum.
+_MIN_TRAIN_BY_TF = {
+    '1w':  8,
+    '3d': 10,
+    '1d': 15,
+    '12h': 18,
+    '6h': 20,
+    '4h': 25,
+    '2h': 28,
+    '1h': 35,
+    '30m': 40,
+    '15m': 50,
+    '5m':  60,
+    '3m':  70,
+    '1m':  80,
+}
+
+
+def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct', train_split=0.70,
+                              timeframe='1d'):
     """
     Findet optimalen min_move_pct für diesen Coin + Timeframe.
-    Ziel: nach dem 70/30-Split mindestens 20 Trainings-Events pro Typ.
-    Dafür brauchen wir ≥ ceil(20 / 0.7) = 29 Gesamt-Events pro Typ.
-    Wenn das nicht erreichbar ist, den Schwellwert wählen der am nächsten
-    an 20 Trainings-Events herankommt.
+    Ziel: nach dem 70/30-Split mindestens _MIN_TRAIN_BY_TF[timeframe] Trainings-Events
+    pro Typ. Wenn das nicht erreichbar ist, den Schwellwert wählen der am nächsten
+    an diesem Minimum herankommt.
     """
     import math
     from collections import Counter
 
     median_atr = float(df[atr_col].median()) if atr_col in df.columns else 1.5
-    min_train  = 20
+    min_train  = _MIN_TRAIN_BY_TF.get(timeframe, 20)
     # Gesamt-Events die nach dem Split ≥ min_train Trainings-Events ergeben
-    min_total  = int(math.ceil(min_train / train_split))  # = 29
+    min_total  = int(math.ceil(min_train / train_split))
 
     # ATR-Multiples + feste Werte, dedupliziert und in [0.1, 15.0]
     atr_multiples = [round(median_atr * m, 1) for m in (0.3, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)]
