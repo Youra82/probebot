@@ -3,12 +3,13 @@ Probebot — Market Forensics Engine
 Usage:
     python -m probebot.run --symbol "BTC/USDT:USDT" --timeframe 1d
                            --start_date 2022-01-01 --end_date 2025-01-01
-                           [--mode scan|investigate|full]
+                           [--mode scan|investigate|full|live]
                            [--investigate_date 2024-03-14]
                            [--min_move_pct 2.5] [--top_n 5]
                            [--drill_down] [--no_drill_down]
                            [--no_telegram] [--clear]
                            [--movement_types BREAKDOWN,IMPULSE_DOWN]
+                           [--scan_candles 5]
 """
 import argparse
 import json
@@ -33,7 +34,7 @@ def main():
     parser.add_argument('--timeframe', default=None)
     parser.add_argument('--start_date', default=None)
     parser.add_argument('--end_date', default=None)
-    parser.add_argument('--mode', default='full', choices=['scan', 'investigate', 'full'])
+    parser.add_argument('--mode', default='full', choices=['scan', 'investigate', 'full', 'live'])
     parser.add_argument('--investigate_date', default=None)
     parser.add_argument('--min_move_pct', type=float, default=None)
     parser.add_argument('--top_n', type=int, default=None)
@@ -42,6 +43,8 @@ def main():
     parser.add_argument('--no_telegram', action='store_true', default=False)
     parser.add_argument('--clear', action='store_true', default=False)
     parser.add_argument('--movement_types', default=None)
+    parser.add_argument('--scan_candles', type=int, default=None,
+                        help='Live-Modus: Anzahl der letzten Kerzen die auf Bewegungen geprüft werden')
     args = parser.parse_args()
 
     # ─── Load settings ──────────────────────────────────────────────────────
@@ -85,8 +88,26 @@ def main():
             send_document(tg_token, tg_chat, path, caption)
 
     print(f"\nProbebot starting...")
-    print(f"  Symbol: {symbol} | TF: {timeframe} | {start_date} → {end_date}")
+    print(f"  Symbol: {symbol} | TF: {timeframe} | Mode: {args.mode}")
     print(f"  Telegram: {'enabled' if (use_telegram and tg_token) else 'disabled'}")
+
+    # ─── LIVE MODE ──────────────────────────────────────────────────────────
+    if args.mode == 'live':
+        _run_live(
+            args=args,
+            settings=settings,
+            symbol=symbol,
+            timeframe=timeframe,
+            min_move_pct=min_move_pct,
+            exchange=exchange,
+            drill_tfs=drill_tfs,
+            use_telegram=use_telegram,
+            tg_token=tg_token,
+            tg_chat=tg_chat,
+            tg_msg=tg_msg,
+            tg_photo=tg_photo,
+        )
+        return
 
     tg_msg(
         f"🔬 <b>PROBEBOT gestartet</b>\n"
@@ -376,6 +397,79 @@ def _send_final_summary(tg_msg, symbol, timeframe, movements, correlations, clus
             lines.append(f"  • <code>{feat}</code> {direction} vor {mtype}  (t={t_stat:+.2f})")
 
     tg_msg('\n'.join(lines))
+
+
+def _run_live(
+    args, settings, symbol, timeframe, min_move_pct, exchange,
+    drill_tfs, use_telegram, tg_token, tg_chat, tg_msg, tg_photo,
+):
+    """Live-Modus: scannt aktuelle Daten, erklärt die aktuelle Marktbewegung."""
+    from probebot.data.loader import DataLoader
+    from probebot.forensics.database import ForensicsDB
+    from probebot.forensics.drill_down import DrillDownEngine
+    from probebot.live.scanner import LiveScanner
+    from probebot.live.alerter import send_live_alert, send_no_alert
+
+    scan_candles = args.scan_candles or settings.get('scan_candles', 5)
+    lookback = settings.get('lookback_candles', 300)
+
+    print(f"\n[LIVE] Starte Live-Scan...")
+    print(f"  Symbol: {symbol}  Timeframe: {timeframe}")
+    print(f"  Letzte Kerzen: {scan_candles}  Min-Move: {min_move_pct}%")
+
+    loader = DataLoader(exchange_id=exchange, secret_path=str(SECRET_PATH))
+    db = ForensicsDB()
+
+    tf_chain = [timeframe] + [t for t in drill_tfs if t != timeframe]
+    drill_engine = DrillDownEngine(loader, timeframe_chain=tf_chain)
+
+    scanner = LiveScanner(
+        loader=loader,
+        db=db,
+        drill_engine=drill_engine,
+        min_move_pct=min_move_pct,
+        lookback_candles=lookback,
+        recent_candles=scan_candles,
+    )
+
+    alerts = scanner.scan(symbol, timeframe, drill_down_tfs=drill_tfs)
+
+    if not alerts:
+        print(f"  [LIVE] Keine signifikante Bewegung erkannt (≥{min_move_pct}%).")
+        if use_telegram and tg_token:
+            send_no_alert(tg_token, tg_chat, symbol, timeframe, min_move_pct)
+        db.close()
+        return
+
+    print(f"\n  [LIVE] {len(alerts)} Alert(s) erkannt — sende Telegram...")
+    for alert in alerts:
+        m = alert['movement']
+        print(f"    → {m.move_type} {m.direction} {m.magnitude_pct:+.2f}%  "
+              f"@ {str(m.timestamp)[:16]}")
+
+        if use_telegram and tg_token:
+            # Pass df and movements for overview chart if available
+            df_for_chart = alert.get('df')
+            all_mvts_for_chart = alert.get('all_movements')
+            send_live_alert(
+                alert=alert,
+                bot_token=tg_token,
+                chat_id=tg_chat,
+                df=df_for_chart,
+                all_movements=all_mvts_for_chart,
+            )
+        else:
+            # Terminal output only
+            print(f"\n    Ursachen ({len(alert['cause'])}):")
+            for c in alert['cause'][:5]:
+                print(f"      [{c['priority']}] {c['category']}: {c['text']}")
+            outlook = alert.get('outlook', {})
+            if outlook:
+                print(f"\n    Prognose: Hit-Rate {outlook.get('hit_rate_pct', 0):.0f}%  "
+                      f"Med. weiterer Move: {outlook.get('median_magnitude', 0):.1f}%")
+
+    db.close()
+    print("\n[LIVE] Fertig.")
 
 
 def _fmt(val) -> str:

@@ -127,14 +127,23 @@ else:
 print(f"\n{Y}[ LETZTE LOGS (logs/, 10 Zeilen) ]{NC}")
 logs_dir = Path('logs')
 if logs_dir.exists():
-    log_files = sorted(logs_dir.glob('pipeline_*.log'), key=lambda p: p.stat().st_mtime, reverse=True)
-    if log_files:
-        print(f"  Letzter Run: {log_files[0].name}")
-        with open(log_files[0]) as f:
-            lines = f.readlines()[-10:]
+    # Pipeline logs
+    pipeline_logs = sorted(logs_dir.glob('pipeline_*.log'), key=lambda p: p.stat().st_mtime, reverse=True)
+    if pipeline_logs:
+        print(f"  Letzter Pipeline-Run: {pipeline_logs[0].name}")
+        with open(pipeline_logs[0]) as f:
+            lines = f.readlines()[-5:]
         for l in lines:
             print(f"    {l.rstrip()}")
-    else:
+    # Live scan logs
+    live_logs = sorted(logs_dir.glob('live_*.log'), key=lambda p: p.stat().st_mtime, reverse=True)
+    if live_logs:
+        print(f"\n  Letzter Live-Scan: {live_logs[0].name}")
+        with open(live_logs[0]) as f:
+            lines = f.readlines()[-5:]
+        for l in lines:
+            print(f"    {l.rstrip()}")
+    if not pipeline_logs and not live_logs:
         print(f"  {C}Keine Log-Dateien gefunden.{NC}")
 else:
     print(f"  {C}logs-Verzeichnis nicht gefunden.{NC}")
