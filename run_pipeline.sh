@@ -25,8 +25,9 @@ echo ""
 
 # ── Symbol ──────────────────────────────────────────────────────────────────
 DEFAULT_SYMBOL=$(python3 -c "import json; print(json.load(open('settings.json')).get('symbol','BTC/USDT:USDT'))" 2>/dev/null || echo "BTC/USDT:USDT")
+echo -e "${YELLOW}Symbol (Futures-Format: BTC/USDT:USDT | ETH/USDT:USDT | SOL/USDT:USDT):${NC}"
 read -p "Symbol [Standard: $DEFAULT_SYMBOL]: " SYMBOL_INPUT
-SYMBOL_INPUT="${SYMBOL_INPUT//[$'\r\n ']/}"
+SYMBOL_INPUT="${SYMBOL_INPUT//[$'\r\n']/}"
 SYMBOL="${SYMBOL_INPUT:-$DEFAULT_SYMBOL}"
 
 # ── Timeframe ────────────────────────────────────────────────────────────────
