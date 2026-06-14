@@ -138,6 +138,46 @@ def main():
     df_raw = loader.fetch(symbol, timeframe, start_date, end_date)
     print(f"  Loaded {len(df_raw)} candles")
 
+    if df_raw.empty:
+        msg = f"⚠️  Keine Daten geladen für {symbol} {timeframe} ({start_date} → {end_date})."
+        print(msg)
+        tg_msg(msg)
+        db.close()
+        sys.exit(1)
+
+    # ─── Datenqualitäts-Check: Lücken erkennen ───────────────────────────────
+    # Bitget liefert für 1h/4h historische Daten mit bis zu 56-Tage-Lücken.
+    # Solche Lücken erzeugen "Phantom-Moves" (z.B. +43% auf einer "1h"-Kerze).
+    _tf_min_map = {
+        '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30,
+        '1h': 60, '2h': 120, '4h': 240, '6h': 360, '12h': 720,
+        '1d': 1440, '3d': 4320, '1w': 10080,
+    }
+    _expected_min = _tf_min_map.get(timeframe, 60)
+    _gaps_min = df_raw['timestamp'].diff().dropna().dt.total_seconds() / 60
+    _median_gap = _gaps_min.median()
+    _max_gap = _gaps_min.max()
+    _gap_ratio = _max_gap / _expected_min
+    _max_gap_days = _max_gap / 1440
+
+    print(f"  Lücken-Check: median={_median_gap:.0f}min, max={_max_gap:.0f}min "
+          f"({_max_gap_days:.1f} Tage, {_gap_ratio:.0f}× erwartet={_expected_min}min)")
+
+    if _gap_ratio > 10:
+        _gap_msg = (
+            f"⚠️  DATENLÜCKEN: {symbol} {timeframe} — max. Lücke {_max_gap_days:.1f} Tage "
+            f"(erwartet {_expected_min} min).\n"
+            f"Bitget liefert für {timeframe} keine lückenlosen historischen Daten.\n"
+            f"Erkannte Bewegungen wären Lücken-Artefakte (z.B. +40% in einer '1h'-Kerze).\n"
+            f"→ Bitte '--timeframe 1d' für saubere Analyse verwenden."
+        )
+        print(f"\n{_gap_msg}")
+        tg_msg(_gap_msg)
+        db.close()
+        sys.exit(1)
+    elif _gap_ratio > 2:
+        print(f"  ⚠️  Daten-Warnung: Max-Lücke {_gap_ratio:.0f}× größer als erwartet — Ergebnisse mit Vorsicht interpretieren")
+
     # ─── [2] Compute features ────────────────────────────────────────────────
     print(f"\n[2/6] Computing features ({len(df_raw)} candles)...")
     df = compute_all_features(df_raw)

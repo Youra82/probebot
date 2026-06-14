@@ -56,7 +56,10 @@ echo -e "${GREEN}  Symbole: ${SYMBOLS[*]}${NC}"
 DEFAULT_TF=$(python3 -c "import json; print(json.load(open('settings.json')).get('primary_timeframe','1d'))" 2>/dev/null || echo "1d")
 echo ""
 echo -e "${YELLOW}Primaerer Timeframe (Basis fuer Bewegungserkennung):${NC}"
-echo "  Empfehlung: 1d = grosse Moves | 4h = mittlere | 1h = kurze"
+echo -e "  ${GREEN}1d${NC}  — vollstaendige Daten auf Bitget (empfohlen, bis zu 5 Jahre)"
+echo -e "  ${YELLOW}4h${NC}  — Bitget hat Luecken bis zu 56 Tage → nur ab 2023 sinnvoll"
+echo -e "  ${YELLOW}1h${NC}  — Bitget hat Luecken bis zu 33 Tage → nur ab 2024 sinnvoll"
+echo -e "  ${RED}Sub-1h${NC} — historische Daten auf Bitget unzuverlaessig"
 read -p "Timeframe [Standard: $DEFAULT_TF]: " TF_INPUT
 TF_INPUT="${TF_INPUT//[$'\r\n ']/}"
 TIMEFRAME="${TF_INPUT:-$DEFAULT_TF}"
