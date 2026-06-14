@@ -326,6 +326,7 @@ def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_co
         coin, timeframe, strategy, strat_name, bias, volatility,
         avg_mag, max_mag, top_signals, move_stats, total,
         impulse_n, breakdown_n, reversal_n, squeeze_n,
+        validation_results=validation_results,
     )
 
     return {
@@ -353,7 +354,8 @@ def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_co
 
 def _build_fazit_text(coin, timeframe, strategy, strat_name, bias, volatility,
                       avg_mag, max_mag, top_signals, move_stats, total,
-                      impulse_n, breakdown_n, reversal_n, squeeze_n):
+                      impulse_n, breakdown_n, reversal_n, squeeze_n,
+                      validation_results=None):
     """Generiert einen zusammenhängenden Fließtext als Fazit."""
 
     parts = []

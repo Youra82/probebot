@@ -320,7 +320,7 @@ def cluster_chart(
 
         names = [f['feature'][:20] for f in feats]
         cluster_vals = [f['cluster_mean'] for f in feats]
-        other_vals = [f['other_mean'] for f in feats]
+        other_vals = [f.get('other_mean', f.get('global_mean', 0)) for f in feats]
         y_pos = np.arange(len(names))
         bar_h = 0.35
 
