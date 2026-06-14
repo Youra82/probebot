@@ -145,16 +145,40 @@ def main():
 
     # ─── [3] Detect movements ────────────────────────────────────────────────
     print(f"\n[3/6] Detecting movements...")
-    detector = MovementDetector(
-        atr_impulse=settings.get('atr_multiplier', 1.5),
-        breakout_bars=20,
-        reversal_min_run=5,
-    )
-    all_movements = detector.detect(df)
-    if movement_types:
-        all_movements = [m for m in all_movements if m.move_type in movement_types]
 
-    # Auto-Kalibrierung: optimalen min_move_pct für diesen Coin + Timeframe finden
+    # Berechne Ziel-Events vorab (für adaptive Detector-Sensitivität)
+    from datetime import datetime as _dt
+    try:
+        _t0 = _dt.strptime(start_date[:10], '%Y-%m-%d')
+        _t1 = _dt.strptime(end_date[:10],   '%Y-%m-%d')
+        _years_pre = max((_t1 - _t0).days / 365.25, 0.25)
+    except Exception:
+        _years_pre = 1.0
+    _min_events_needed = int(_MIN_EVENTS_PER_YEAR * _years_pre)
+
+    # Adaptiver atr_impulse: senkt Kriterien wenn Detector zu wenige Events findet
+    _atr_steps = [settings.get('atr_multiplier', 1.5), 1.2, 1.0, 0.75, 0.5]
+    _used_atr = _atr_steps[0]
+    all_movements = []
+    for _atr_try in _atr_steps:
+        _det = MovementDetector(
+            atr_impulse=_atr_try,
+            breakout_bars=20,
+            reversal_min_run=5,
+        )
+        _mvs = _det.detect(df)
+        if movement_types:
+            _mvs = [m for m in _mvs if m.move_type in movement_types]
+        all_movements = _mvs
+        _used_atr = _atr_try
+        if len(all_movements) >= _min_events_needed:
+            break
+        if _atr_try != _atr_steps[-1]:
+            print(f"  atr_impulse={_atr_try}: {len(all_movements)} Events < Ziel {_min_events_needed} → senke auf {_atr_steps[_atr_steps.index(_atr_try)+1]}")
+
+    print(f"  Detector: atr_impulse={_used_atr}, {len(all_movements)} Events gefunden")
+
+    # Auto-Kalibrierung: optimalen min_move_pct für diesen Coin + Zeitraum finden
     _user_set_threshold = args.min_move_pct is not None or 'min_move_pct' in settings
     if not _user_set_threshold:
         min_move_pct, _median_atr, _min_total, _years, _calib = _auto_calibrate_min_move(
