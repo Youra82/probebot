@@ -26,9 +26,19 @@ echo ""
 # ── Symbol ──────────────────────────────────────────────────────────────────
 DEFAULT_SYMBOL=$(python3 -c "import json; print(json.load(open('settings.json')).get('symbol','BTC/USDT:USDT'))" 2>/dev/null || echo "BTC/USDT:USDT")
 echo -e "${YELLOW}Symbol (Futures-Format: BTC/USDT:USDT | ETH/USDT:USDT | SOL/USDT:USDT):${NC}"
-read -p "Symbol [Standard: $DEFAULT_SYMBOL]: " SYMBOL_INPUT
-SYMBOL_INPUT="${SYMBOL_INPUT//[$'\r\n']/}"
-SYMBOL="${SYMBOL_INPUT:-$DEFAULT_SYMBOL}"
+echo -e "${CYAN}  Wichtig: Slash und Doppelpunkt beachten — KEIN Leerzeichen!${NC}"
+while true; do
+    read -p "Symbol [Standard: $DEFAULT_SYMBOL]: " SYMBOL_INPUT
+    SYMBOL_INPUT=$(echo "$SYMBOL_INPUT" | tr -d '\r\n' | xargs)
+    SYMBOL="${SYMBOL_INPUT:-$DEFAULT_SYMBOL}"
+    if [[ "$SYMBOL" == *"/"* ]] && [[ "$SYMBOL" == *":"* ]]; then
+        break
+    elif [[ -z "$SYMBOL_INPUT" ]]; then
+        break
+    else
+        echo -e "${RED}  Ungültiges Format! Beispiel: BTC/USDT:USDT${NC}"
+    fi
+done
 
 # ── Timeframe ────────────────────────────────────────────────────────────────
 DEFAULT_TF=$(python3 -c "import json; print(json.load(open('settings.json')).get('primary_timeframe','1d'))" 2>/dev/null || echo "1d")
