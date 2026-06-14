@@ -23,17 +23,33 @@ echo -e "${BLUE}=======================================================${NC}"
 echo -e "       probebot — Ergebnis-Anzeige"
 echo -e "${BLUE}=======================================================${NC}"
 echo ""
-
 echo -e "${YELLOW}Was moechtest du anzeigen?${NC}"
-echo "  1) Staerkste Praediktoren (Top-Features pro Bewegungstyp)"
-echo "  2) Alle gespeicherten Bewegungen (mit Kontext)"
-echo "  3) Pattern-Cluster Zusammenfassung"
-echo "  4) Letzten JSON-Report anzeigen"
-echo "  5) Bewegung nach Datum suchen"
-read -p "Auswahl (1-5) [Standard: 1]: " MODE
+echo ""
+echo -e "  ${GREEN}Trading Bot Evaluation (OOS 30%):${NC}"
+echo "  1) OOS-Backtest aller Configs — Ranking-Tabelle"
+echo "  2) Portfolio-Simulation (mehrere Configs kombinieren)"
+echo "  3) Auto-Portfolio-Optimizer (greedy, DD-Constraint)"
+echo "  4) Equity-Chart erstellen + Telegram"
+echo ""
+echo -e "  ${CYAN}Forensik / Rohdaten:${NC}"
+echo "  5) Staerkste Praediktoren (Top-Features pro Bewegungstyp)"
+echo "  6) Alle gespeicherten Bewegungen (letzte 50)"
+echo "  7) Pattern-Cluster Zusammenfassung"
+echo "  8) Letzten JSON-Report anzeigen"
+echo "  9) Bewegung nach Datum suchen"
+echo ""
+read -p "Auswahl (1-9) [Standard: 1]: " MODE
 MODE="${MODE//[$'\r\n ']/}"
 MODE="${MODE:-1}"
 
+# ── Modi 1-4: Trading Bot Evaluation (Python show_results.py) ─────────────────
+if [[ "$MODE" =~ ^[1-4]$ ]]; then
+    $PYTHON -m probebot.analysis.show_results --mode "$MODE"
+    deactivate
+    exit 0
+fi
+
+# ── Modi 5-9: Forensik / Rohdaten (inline Python) ─────────────────────────────
 $PYTHON - <<PYEOF
 import json, sqlite3, sys
 from pathlib import Path
@@ -57,7 +73,7 @@ if not db_path.exists():
 conn = sqlite3.connect(str(db_path))
 conn.row_factory = sqlite3.Row
 
-if mode == '1':
+if mode == '5':
     print(f"\n{Y}=== Staerkste Praediktoren (t-Statistik >= 2.0) ==={NC}\n")
     rows = conn.execute(
         "SELECT * FROM commonalities WHERE abs(t_statistic) >= 2.0 "
@@ -78,7 +94,7 @@ if mode == '1':
               f"{r['mean_all']:>10.4f}  "
               f"{r['predictive_pct']:>5.0f}%")
 
-elif mode == '2':
+elif mode == '6':
     rows = conn.execute(
         "SELECT * FROM movements ORDER BY symbol, timeframe, timestamp DESC LIMIT 50"
     ).fetchall()
@@ -96,10 +112,10 @@ elif mode == '2':
               f"{color}{r['move_type']:<22}{NC}  "
               f"{color}{dir_sym}{NC}{r['direction']:>3}  "
               f"{r['magnitude_pct']:>+6.2f}%  "
-              f"{r['atr_multiple']:>4.1f}×  "
+              f"{r['atr_multiple']:>4.1f}x  "
               f"{regime}  {rsi_s}")
 
-elif mode == '3':
+elif mode == '7':
     print(f"\n{Y}=== Pattern-Cluster Zusammenfassung ==={NC}")
     rows = conn.execute("SELECT * FROM movements ORDER BY symbol, timeframe").fetchall()
     if not rows:
@@ -116,10 +132,10 @@ elif mode == '3':
             up = sum(1 for r in rows if r['move_type'] == mtype and r['direction'] == 'UP')
             dn = cnt - up
             bar_len = int(cnt / max(type_count.values()) * 30)
-            bar = '█' * bar_len
-            print(f"    {mtype:<26}  {G}{bar:<30}{NC}  {cnt:>3}×  (▲{up} ▼{dn})")
+            bar = '#' * bar_len
+            print(f"    {mtype:<26}  {G}{bar:<30}{NC}  {cnt:>3}x  (up:{up} dn:{dn})")
 
-elif mode == '4':
+elif mode == '8':
     report_files = sorted(Path('artifacts/db').glob('report_*.json'),
                           key=lambda p: p.stat().st_mtime, reverse=True)
     if not report_files:
@@ -132,18 +148,20 @@ elif mode == '4':
         print(f"  Erstellt:    {data.get('generated_at','?')[:19]}")
         print(f"  Symbol:      {data.get('symbol','?')}")
         print(f"  Timeframe:   {data.get('timeframe','?')}")
-        print(f"  Zeitraum:    {data.get('period',{}).get('start','?')} → {data.get('period',{}).get('end','?')}")
+        print(f"  Zeitraum:    {data.get('period',{}).get('start','?')} -> {data.get('period',{}).get('end','?')}")
         print(f"  Bewegungen:  {data.get('n_movements','?')}")
         corr = data.get('correlations', {})
         for mtype, ranked in corr.items():
+            if isinstance(ranked, dict):
+                ranked = ranked.get('rows', [])
             top = [r for r in ranked if abs(r.get('t_statistic', 0)) >= 2.0][:5]
             if top:
                 print(f"\n  {G}{mtype}{NC}:")
                 for r in top:
-                    sign = '↑' if r['t_statistic'] > 0 else '↓'
+                    sign = '>' if r['t_statistic'] > 0 else '<'
                     print(f"    {sign} {r['feature']:<35}  t={r['t_statistic']:+.2f}  hit={r['predictive_pct']:.0f}%")
 
-elif mode == '5':
+elif mode == '9':
     date_input = input("Datum eingeben (YYYY-MM-DD): ").strip()
     rows = conn.execute(
         "SELECT * FROM movements WHERE timestamp LIKE ? ORDER BY timestamp",
@@ -154,9 +172,9 @@ elif mode == '5':
         for r in rows:
             ctx = json.loads(r['context']) if r['context'] else {}
             dd = json.loads(r['drill_down']) if r['drill_down'] else {}
-            dir_sym = '▼' if r['direction'] == 'DOWN' else '▲'
+            dir_sym = 'v' if r['direction'] == 'DOWN' else '^'
             color = R if r['direction'] == 'DOWN' else G
-            print(f"  {color}{dir_sym} {r['move_type']:<22}  {r['magnitude_pct']:>+6.2f}%  {r['atr_multiple']:.1f}×ATR{NC}")
+            print(f"  {color}{dir_sym} {r['move_type']:<22}  {r['magnitude_pct']:>+6.2f}%  {r['atr_multiple']:.1f}xATR{NC}")
             print(f"  Zeitpunkt: {str(r['timestamp'])[:16]}")
             if ctx:
                 print(f"  Regime: {ctx.get('regime','?')}  RSI: {ctx.get('rsi_14','?')}  "

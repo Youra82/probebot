@@ -173,6 +173,14 @@ def main():
     df = compute_all_features(df_raw)
     print(f"  {len(df.columns)} feature columns computed")
 
+    # Save processed df to parquet so optimizer/show_results can load without re-fetching
+    _data_dir = ROOT / 'artifacts' / 'data'
+    _data_dir.mkdir(parents=True, exist_ok=True)
+    _sym_safe = symbol.replace('/', '_').replace(':', '_')
+    _data_path = _data_dir / f'data_{_sym_safe}_{timeframe}.parquet'
+    df.to_parquet(str(_data_path), index=False)
+    print(f"  Data cached: {_data_path.name}")
+
     # ─── [3] Detect movements ────────────────────────────────────────────────
     print(f"\n[3/6] Detecting movements...")
 
@@ -323,6 +331,23 @@ def main():
     else:
         print(f"\n[4b] OOS-Validierung übersprungen (keine Test-Events)")
 
+    # ─── Strategy selection ──────────────────────────────────────────────────
+    from probebot.analysis.strategy_selector import select_strategy as _sel_strategy
+    _move_stats_sel = {}
+    for _m in movements:
+        _move_stats_sel.setdefault(_m.move_type, {'n': 0})
+        _move_stats_sel[_m.move_type]['n'] += 1
+    _selected_strat, _type_scores, _tradeable = _sel_strategy(
+        _move_stats_sel, correlations, movements, validation_results or {}
+    )
+    _selected_strategy_info = {
+        'strategy':    _selected_strat,
+        'type_scores': {k: round(v, 2) for k, v in _type_scores.items()},
+        'tradeable':   _tradeable,
+    }
+    print(f"\n  Strategie-Auswahl: {_selected_strat}  "
+          f"(Score: {_type_scores.get(_selected_strat, 0):.1f})")
+
     # ─── [5] Drill-Down ──────────────────────────────────────────────────────
     drill_down_results = {}
     if drill_down and movements:
@@ -417,6 +442,9 @@ def main():
         output_path=spec_path,
         validation_results=validation_results,
         correlations_meta=correlations_meta,
+        selected_strategy=_selected_strategy_info,
+        split_date=split_date,
+        split_idx=split_idx,
     )
     print(f"  Bot-Spec saved: {spec_path}")
 

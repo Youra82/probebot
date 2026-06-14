@@ -208,15 +208,118 @@ for SYMBOL in "${SYMBOLS[@]}"; do
     echo ""
 done
 
-if [ $OVERALL_EXIT -eq 0 ]; then
-    echo -e "${GREEN}=======================================================${NC}"
-    echo -e "  ${GREEN}Alle Symbole erfolgreich analysiert!${NC}"
+if [ $OVERALL_EXIT -ne 0 ]; then
+    echo -e "${RED}Pipeline mit Fehler beendet. Siehe logs/*.log${NC}"
+    deactivate
+    exit $OVERALL_EXIT
+fi
+
+echo -e "${GREEN}=======================================================${NC}"
+echo -e "  ${GREEN}Forensik abgeschlossen!${NC}"
+echo -e "${GREEN}=======================================================${NC}"
+
+# ── Phase 2: Optimizer ────────────────────────────────────────────────────────
+echo ""
+echo -e "${BLUE}=======================================================${NC}"
+echo -e "       Phase 2 — Optimizer"
+echo -e "${BLUE}=======================================================${NC}"
+echo ""
+echo "  Optimiert Signal-Schwellenwerte + Risiko-Parameter"
+echo "  auf den 70% Trainingsdaten (30% OOS bleibt unsichtbar)."
+echo ""
+read -p "Optimizer jetzt ausfuehren? (j/n) [Standard: j]: " OPT_INPUT
+OPT_INPUT="${OPT_INPUT//[$'\r\n ']/}"
+OPT_INPUT="${OPT_INPUT:-j}"
+
+if [[ "$OPT_INPUT" =~ ^[jJyY] ]]; then
+
+    DEFAULT_TRIALS=$(python3 -c "import json; print(json.load(open('settings.json')).get('optimizer_trials',100))" 2>/dev/null || echo "100")
+    read -p "Anzahl Trials [Standard: $DEFAULT_TRIALS]: " TRIALS_INPUT
+    TRIALS_INPUT="${TRIALS_INPUT//[$'\r\n ']/}"
+    TRIALS="${TRIALS_INPUT:-$DEFAULT_TRIALS}"
+
+    DEFAULT_CAPITAL=$(python3 -c "import json; print(json.load(open('settings.json')).get('start_capital',100))" 2>/dev/null || echo "100")
+    read -p "Start-Kapital USDT [Standard: $DEFAULT_CAPITAL]: " CAP_INPUT
+    CAP_INPUT="${CAP_INPUT//[$'\r\n ']/}"
+    CAPITAL="${CAP_INPUT:-$DEFAULT_CAPITAL}"
+
     echo ""
-    echo "  Ergebnisse anzeigen:  bash show_results.sh"
-    echo "  Status anzeigen:      bash show_status.sh"
+    echo -e "${YELLOW}Optimizer-Modus:${NC}"
+    echo "  best_profit  — maximiert PnL (nur DD-Grenze)"
+    echo "  strict       — zusätzlich Win-Rate-Minimum"
+    read -p "Modus [Standard: best_profit]: " OPT_MODE_INPUT
+    OPT_MODE_INPUT="${OPT_MODE_INPUT//[$'\r\n ']/}"
+    OPT_MODE="${OPT_MODE_INPUT:-best_profit}"
+
+    DEFAULT_MAXDD=$(python3 -c "import json; print(json.load(open('settings.json')).get('max_drawdown',30))" 2>/dev/null || echo "30")
+    read -p "Max. Drawdown % [Standard: $DEFAULT_MAXDD]: " MAXDD_INPUT
+    MAXDD_INPUT="${MAXDD_INPUT//[$'\r\n ']/}"
+    MAXDD="${MAXDD_INPUT:-$DEFAULT_MAXDD}"
+
+    echo ""
+    echo -e "${BLUE}=======================================================${NC}"
+    echo -e "  Optimizer-Konfiguration:"
+    echo -e "  Trials:       ${GREEN}$TRIALS${NC}"
+    echo -e "  Kapital:      ${GREEN}$CAPITAL USDT${NC}"
+    echo -e "  Modus:        ${GREEN}$OPT_MODE${NC}"
+    echo -e "  Max. DD:      ${GREEN}$MAXDD%${NC}"
+    echo -e "${BLUE}=======================================================${NC}"
+    echo ""
+
+    for SYMBOL in "${SYMBOLS[@]}"; do
+        SYM_SAFE="${SYMBOL//[\/:]/_}"
+        BOT_SPEC="artifacts/db/bot_spec_${SYM_SAFE}_${TIMEFRAME}.json"
+        DATA_FILE="artifacts/data/data_${SYM_SAFE}_${TIMEFRAME}.parquet"
+
+        if [ ! -f "$BOT_SPEC" ]; then
+            echo -e "${RED}bot_spec nicht gefunden: $BOT_SPEC${NC}"
+            echo "  Erst Forensik-Analyse ausführen."
+            continue
+        fi
+        if [ ! -f "$DATA_FILE" ]; then
+            echo -e "${RED}Daten-Cache nicht gefunden: $DATA_FILE${NC}"
+            echo "  Erst Forensik-Analyse ausführen."
+            continue
+        fi
+
+        # Read split_idx from bot_spec
+        SPLIT_IDX=$(python3 -c "import json; print(json.load(open('$BOT_SPEC'))['meta']['split_idx'])" 2>/dev/null || echo "0")
+        if [ "$SPLIT_IDX" -eq 0 ]; then
+            echo -e "${RED}split_idx nicht gefunden in $BOT_SPEC — Forensik neu ausführen${NC}"
+            continue
+        fi
+
+        echo -e "${BLUE}--- Optimizer: $SYMBOL $TIMEFRAME ---${NC}"
+        $PYTHON -m probebot.analysis.optimizer \
+            --symbol    "$SYMBOL" \
+            --timeframe "$TIMEFRAME" \
+            --bot_spec  "$BOT_SPEC" \
+            --data      "$DATA_FILE" \
+            --split_idx "$SPLIT_IDX" \
+            --trials    "$TRIALS" \
+            --capital   "$CAPITAL" \
+            --max_dd    "$MAXDD" \
+            --mode      "$OPT_MODE"
+
+        OPT_EXIT=$?
+        if [ $OPT_EXIT -eq 0 ]; then
+            echo -e "${GREEN}$SYMBOL Optimizer abgeschlossen.${NC}"
+        else
+            echo -e "${RED}Optimizer Fehler bei $SYMBOL (Exit $OPT_EXIT)${NC}"
+        fi
+        echo ""
+    done
+
+    echo -e "${GREEN}=======================================================${NC}"
+    echo -e "  ${GREEN}Optimizer abgeschlossen!${NC}"
+    echo ""
+    echo "  OOS-Ergebnis prüfen:   bash show_results.sh → Mode 1"
+    echo "  Portfolio optimieren:  bash show_results.sh → Mode 3"
     echo -e "${GREEN}=======================================================${NC}"
 else
-    echo -e "${RED}Pipeline mit Fehler beendet. Siehe logs/*.log${NC}"
+    echo ""
+    echo "  Optimizer übersprungen."
+    echo "  Manuell starten: python -m probebot.analysis.optimizer --help"
 fi
 
 deactivate

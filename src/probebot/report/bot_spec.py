@@ -20,6 +20,9 @@ def generate_bot_spec(
     output_path: str,
     validation_results: dict = None,
     correlations_meta: dict = None,
+    selected_strategy: dict = None,
+    split_date: str = None,
+    split_idx: int = None,
 ) -> str:
     """Erzeugt strukturierte Bot-Spec JSON und gibt den Pfad zurück."""
 
@@ -30,6 +33,8 @@ def generate_bot_spec(
             'symbol': symbol,
             'timeframe': timeframe,
             'period': {'start': start_date, 'end': end_date},
+            'split_date': split_date or '',
+            'split_idx': split_idx or 0,
             'n_movements': len(movements),
             'oos_validation': 'STRICT 70/30 temporal split — test data never seen by learning algorithms',
             'usage': (
@@ -40,6 +45,7 @@ def generate_bot_spec(
                 'Nur ROBUST/STABIL Signale für den Bot verwenden!'
             ),
         },
+        'selected_strategy': selected_strategy or {},
         'movement_statistics': _build_movement_stats(movements),
         'entry_conditions': _build_entry_conditions(correlations, correlations_meta),
         'oos_validation': _build_oos_section(validation_results),
