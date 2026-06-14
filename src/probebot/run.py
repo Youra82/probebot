@@ -254,48 +254,6 @@ def main():
 
             rpt.print_movement_detail(m, dd, similar)
 
-        # ── Primär-TF SL/TP als Fallback (immer verfügbar, auch wenn Lower-TF-Fetch leer) ──
-        print(f"\n  Berechne SL/TP auf primärem Timeframe ({timeframe})...")
-        for m in focus:
-            ts_key  = str(m.timestamp)
-            dd_entry = drill_down_results.get(ts_key, {})
-
-            # Prüfen ob für dieses Event IRGENDEIN Level SL/TP hat
-            has_sl_tp = any(
-                isinstance(v, dict) and 'sl_tp' in v and v['sl_tp']
-                for v in dd_entry.values()
-            )
-            if has_sl_tp:
-                continue  # Lower-TF bereits OK → kein Fallback nötig
-
-            # Primary-TF SL/TP berechnen aus dem geladenen df
-            entry_idx  = max(0, m.idx - 1)
-            try:
-                entry_price = float(df.iloc[entry_idx]['close'])
-            except Exception:
-                continue
-
-            primary_sl_tp = drill_engine._calculate_sl_tp(
-                df, entry_idx, m.direction, entry_price,
-            )
-            if primary_sl_tp and 'error' not in primary_sl_tp:
-                ctx_row = df.iloc[m.idx]
-                # Als eigenes Level eintragen (wird im HTML wie ein Zoom-Level behandelt)
-                dd_entry[timeframe] = {
-                    'entry_price':      entry_price,
-                    'entry_confidence': 5,
-                    'entry_ts':         str(m.timestamp)[:16],
-                    'entry_signals':    [],
-                    'precursors':       [],
-                    'sl_tp':            primary_sl_tp,
-                    'regime':           str(ctx_row.get('regime', '?')),
-                    'rsi_14':           _fmt_float(ctx_row.get('rsi_14')),
-                    'adx':              _fmt_float(ctx_row.get('adx')),
-                    '_primary_tf_fallback': True,
-                }
-                drill_down_results[ts_key] = dd_entry
-                sl_info = primary_sl_tp.get('risk_reward_summary', '')
-                print(f"    {m.move_type} @ {str(m.timestamp)[:10]}: {sl_info}")
     else:
         print(f"\n[5/6] Drill-down skipped")
 
