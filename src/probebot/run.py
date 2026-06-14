@@ -159,10 +159,11 @@ def main():
     if not _user_set_threshold:
         min_move_pct, _median_atr, _calib = _auto_calibrate_min_move(df, all_movements)
         chosen_label = _best_calib_label(_calib, min_move_pct)
-        print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%):")
+        print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%, Ziel: ≥20 Train-Events/Typ):")
         for _t, _n, _good, _score in _calib:
+            _train_est = int(_n * 0.70)
             _marker = '→' if _t == min_move_pct else ' '
-            print(f"  {_marker} {_t:.1f}%: {_n:3d} Events, {_good} Typen ≥15 Events")
+            print(f"  {_marker} {_t:.2f}%: {_n:3d} Events (~{_train_est} Train), {_good} Typen ≥20 Train")
         print(f"  Gewählt: min_move_pct = {min_move_pct}%  [{chosen_label}]")
     else:
         print(f"  min_move_pct = {min_move_pct}% (manuell)")
@@ -518,22 +519,28 @@ def _run_live(
     print("\n[LIVE] Fertig.")
 
 
-def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct'):
+def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct', train_split=0.70):
     """
     Findet optimalen min_move_pct für diesen Coin + Timeframe.
-    Strategie: ATR-basierte Kandidaten + feste Ladder → Score nach
-    Typen mit ≥15 Events (statistische Signifikanz) minus Rausch-Penalty.
+    Ziel: nach dem 70/30-Split mindestens 20 Trainings-Events pro Typ.
+    Dafür brauchen wir ≥ ceil(20 / 0.7) = 29 Gesamt-Events pro Typ.
+    Wenn das nicht erreichbar ist, den Schwellwert wählen der am nächsten
+    an 20 Trainings-Events herankommt.
     """
+    import math
     from collections import Counter
 
     median_atr = float(df[atr_col].median()) if atr_col in df.columns else 1.5
+    min_train  = 20
+    # Gesamt-Events die nach dem Split ≥ min_train Trainings-Events ergeben
+    min_total  = int(math.ceil(min_train / train_split))  # = 29
 
-    # ATR-Multiples + feste Werte, dedupliziert und in [0.3, 15.0]
-    atr_multiples = [round(median_atr * m, 1) for m in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)]
-    fixed = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5]
-    candidates = sorted({round(c, 1) for c in atr_multiples + fixed if 0.3 <= c <= 15.0})
+    # ATR-Multiples + feste Werte, dedupliziert und in [0.1, 15.0]
+    atr_multiples = [round(median_atr * m, 1) for m in (0.3, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)]
+    fixed = [0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5]
+    candidates = sorted({round(c, 2) for c in atr_multiples + fixed if 0.1 <= c <= 15.0})
 
-    best_threshold = round(median_atr * 1.5, 1) or 1.5
+    best_threshold = candidates[len(candidates) // 2]
     best_score = -999
     results = []
 
@@ -543,20 +550,30 @@ def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct'):
             continue
         type_counts = Counter(m.move_type for m in filtered)
         total = len(filtered)
-        types_enough = sum(1 for c in type_counts.values() if c >= 15)
-        types_ideal  = sum(1 for c in type_counts.values() if 15 <= c <= 120)
 
-        # Mehr Typen mit ausreichend Daten = besser; Rauschen und Leere bestrafen
-        noise_penalty   = max(0.0, (total - 250) / 50) if total > 250 else 0.0
-        sparse_penalty  = max(0.0, (10 - total) * 2)   if total < 10  else 0.0
-        score = types_enough * 10 + types_ideal * 3 - noise_penalty - sparse_penalty
+        # Trainings-Events pro Typ (geschätzt)
+        train_counts = {mt: int(c * train_split) for mt, c in type_counts.items()}
+        types_at_min   = sum(1 for c in train_counts.values() if c >= min_train)
+        # Wie nah ist der schlechteste Typ am Ziel (20)?
+        closest_to_min = max(train_counts.values()) if train_counts else 0
 
-        results.append((t, total, types_enough, score))
+        # Rauschen (zu viele Events) und Leere bestrafen
+        noise_penalty  = max(0.0, (total - 350) / 50) if total > 350 else 0.0
+        sparse_penalty = max(0.0, (5 - total) * 5)    if total < 5   else 0.0
+
+        # Primär: Typen die das Minimum erreichen; Sekundär: Nähe zum Minimum
+        score = (types_at_min * 100
+                 + min(closest_to_min, min_train * 2)
+                 - noise_penalty - sparse_penalty)
+
+        results.append((t, total, types_at_min, closest_to_min, score))
         if score > best_score:
             best_score = score
             best_threshold = t
 
-    return best_threshold, median_atr, results
+    # Ergebnisse für Ausgabe: (threshold, total, types_at_min, score)
+    display = [(t, n, g, s) for t, n, g, _, s in results]
+    return best_threshold, median_atr, display
 
 
 def _best_calib_label(calib_results, chosen):
@@ -566,7 +583,7 @@ def _best_calib_label(calib_results, chosen):
                 return 'OPTIMAL'
             if good >= 1:
                 return 'AUSREICHEND'
-            return 'WENIG DATEN'
+            return 'WENIG DATEN — Zeitraum/Symbol hat schlicht wenige Ereignisse'
     return '?'
 
 
