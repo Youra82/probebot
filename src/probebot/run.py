@@ -146,25 +146,46 @@ def main():
     # ─── [3] Detect movements ────────────────────────────────────────────────
     print(f"\n[3/6] Detecting movements...")
 
-    # Berechne Ziel-Events vorab (für adaptive Detector-Sensitivität)
+    # Berechne Ziel-Events aus tatsächlicher Datenzeitspanne
+    # (Bitget limitiert 1h auf ~5200 Kerzen — CLI-Args können weiter zurückreichen)
     from datetime import datetime as _dt
     try:
-        _t0 = _dt.strptime(start_date[:10], '%Y-%m-%d')
-        _t1 = _dt.strptime(end_date[:10],   '%Y-%m-%d')
-        _years_pre = max((_t1 - _t0).days / 365.25, 0.25)
+        _actual_ts0 = df['timestamp'].iloc[0]
+        _actual_ts1 = df['timestamp'].iloc[-1]
+        _years_pre = max((_actual_ts1 - _actual_ts0).total_seconds() / (365.25 * 86400), 0.1)
     except Exception:
         _years_pre = 1.0
     _min_events_needed = int(_MIN_EVENTS_PER_YEAR * _years_pre)
+    print(f"  Daten: {str(df['timestamp'].iloc[0])[:10]} → {str(df['timestamp'].iloc[-1])[:10]} "
+          f"({len(df)} Kerzen, {_years_pre:.2f}J) → Ziel ≥{_min_events_needed} Events")
 
-    # Adaptiver atr_impulse: senkt Kriterien wenn Detector zu wenige Events findet
+    # Timeframe-adaptive Detector-Parameter
+    # Je kürzer der TF, desto strenger die Strukturkriterien (sonst Rauschen)
+    _tf_params = {
+        '1w':  dict(breakout_bars=10, reversal_min_run=3),
+        '3d':  dict(breakout_bars=12, reversal_min_run=3),
+        '1d':  dict(breakout_bars=20, reversal_min_run=5),
+        '12h': dict(breakout_bars=24, reversal_min_run=6),
+        '6h':  dict(breakout_bars=28, reversal_min_run=7),
+        '4h':  dict(breakout_bars=30, reversal_min_run=8),
+        '2h':  dict(breakout_bars=36, reversal_min_run=9),
+        '1h':  dict(breakout_bars=48, reversal_min_run=12),
+        '30m': dict(breakout_bars=60, reversal_min_run=15),
+        '15m': dict(breakout_bars=80, reversal_min_run=20),
+        '5m':  dict(breakout_bars=96, reversal_min_run=24),
+        '1m':  dict(breakout_bars=120, reversal_min_run=30),
+    }
+    _tf_p = _tf_params.get(timeframe, dict(breakout_bars=20, reversal_min_run=5))
+
+    # Adaptiver atr_impulse: senkt Sensitivität wenn Detector zu wenige Events findet
     _atr_steps = [settings.get('atr_multiplier', 1.5), 1.2, 1.0, 0.75, 0.5]
     _used_atr = _atr_steps[0]
     all_movements = []
     for _atr_try in _atr_steps:
         _det = MovementDetector(
             atr_impulse=_atr_try,
-            breakout_bars=20,
-            reversal_min_run=5,
+            breakout_bars=_tf_p['breakout_bars'],
+            reversal_min_run=_tf_p['reversal_min_run'],
         )
         _mvs = _det.detect(df)
         if movement_types:
@@ -176,13 +197,17 @@ def main():
         if _atr_try != _atr_steps[-1]:
             print(f"  atr_impulse={_atr_try}: {len(all_movements)} Events < Ziel {_min_events_needed} → senke auf {_atr_steps[_atr_steps.index(_atr_try)+1]}")
 
-    print(f"  Detector: atr_impulse={_used_atr}, {len(all_movements)} Events gefunden")
+    print(f"  Detector: atr_impulse={_used_atr}, breakout={_tf_p['breakout_bars']}b, "
+          f"reversal={_tf_p['reversal_min_run']}c → {len(all_movements)} Events")
 
     # Auto-Kalibrierung: optimalen min_move_pct für diesen Coin + Zeitraum finden
     _user_set_threshold = args.min_move_pct is not None or 'min_move_pct' in settings
     if not _user_set_threshold:
+        # Tatsächliche Daten-Zeitspanne (nicht CLI-Args) — Bitget limitiert 1h auf ~5200 Kerzen
+        _actual_start = str(df['timestamp'].iloc[0])[:10]
+        _actual_end   = str(df['timestamp'].iloc[-1])[:10]
         min_move_pct, _median_atr, _min_total, _years, _calib = _auto_calibrate_min_move(
-            df, all_movements, start_date=start_date, end_date=end_date
+            df, all_movements, start_date=_actual_start, end_date=_actual_end
         )
         _chosen_n = next((n for t, n in _calib if t == min_move_pct), 0)
         _label = _best_calib_label(_chosen_n, _min_total)
