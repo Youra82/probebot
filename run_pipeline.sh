@@ -56,11 +56,12 @@ echo -e "${GREEN}  Symbole: ${SYMBOLS[*]}${NC}"
 DEFAULT_TF=$(python3 -c "import json; print(json.load(open('settings.json')).get('primary_timeframe','1d'))" 2>/dev/null || echo "1d")
 echo ""
 echo -e "${YELLOW}Primaerer Timeframe (Basis fuer Bewegungserkennung):${NC}"
-echo -e "  ${GREEN}1d${NC}   — vollstaendige Daten, ~5 Jahre (2021-heute, ~1800 Kerzen/Jahr)"
-echo -e "  ${GREEN}4h${NC}   — vollstaendige Daten, ~3 Jahre (2022-heute, ~2200 Kerzen/Jahr)"
-echo -e "  ${GREEN}1h${NC}   — vollstaendige Daten, ~1-2 Jahre (2024-heute, ~8800 Kerzen/Jahr)"
-echo -e "  ${YELLOW}15m${NC}  — begrenzte Historie auf Bitget (~6 Monate empfohlen)"
-echo -e "  ${RED}Sub-15m${NC} — sehr begrenzte Historie, nur kurze Zeitraeume"
+echo -e "  ${GREEN}1d${NC}   — ab 2021 (4.5J), ~365 Kerzen/Jahr   — 1 Luecke ~2 Tage bekannt"
+echo -e "  ${GREEN}4h${NC}   — ab 2021 (4.5J), ~2200 Kerzen/Jahr  — lueckenlos"
+echo -e "  ${GREEN}1h${NC}   — ab 2021 (4.4J), ~8800 Kerzen/Jahr  — lueckenlos"
+echo -e "  ${GREEN}15m${NC}  — ab 2023 (2.5J), ~35000 Kerzen/Jahr — lueckenlos"
+echo -e "  ${YELLOW}5m${NC}   — ab 2024 (1.5J), ~105000 Kerzen/Jahr"
+echo -e "  ${YELLOW}1m${NC}   — ab 2025 (~6 Mon), ~525000 Kerzen/Jahr"
 read -p "Timeframe [Standard: $DEFAULT_TF]: " TF_INPUT
 TF_INPUT="${TF_INPUT//[$'\r\n ']/}"
 TIMEFRAME="${TF_INPUT:-$DEFAULT_TF}"
@@ -77,10 +78,10 @@ printf "  %-6s  %s\n" "15m:" "2024-01-01 → heute  (6 Monate, ~10000 Kerzen)"
 # Start-Default ist timeframe-adaptiv (Bitget limitiert historische Daten je TF)
 case "$TIMEFRAME" in
     1w|3d|1d) DEFAULT_START="2021-01-01" ;;
-    12h|6h|4h|2h) DEFAULT_START="2023-01-01" ;;
-    1h)  DEFAULT_START="2024-01-01" ;;
-    30m|15m) DEFAULT_START="2024-06-01" ;;
-    5m|3m|1m) DEFAULT_START="2025-01-01" ;;
+    12h|6h|4h|2h|1h) DEFAULT_START="2021-01-01" ;;
+    30m|15m) DEFAULT_START="2023-01-01" ;;
+    5m|3m) DEFAULT_START="2024-01-01" ;;
+    1m) DEFAULT_START="2025-01-01" ;;
     *) DEFAULT_START=$(python3 -c "import json; print(json.load(open('settings.json')).get('start_date','2022-01-01'))" 2>/dev/null || echo "2022-01-01") ;;
 esac
 DEFAULT_END=$(date +%Y-%m-%d)
