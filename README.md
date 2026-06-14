@@ -70,7 +70,21 @@ Berechnet pro Timeframe:
 - Optimales Entry-Timing
 - Stoppt bei Confidence ≥ 8 (kein sinnloser weiterer Zoom)
 
-### 6. Grafische Auswertung (Telegram)
+### 6. Live-Scanner — Aktuelle Bewegung erklären
+
+`bash run_live.sh` prüft ob der Markt **gerade jetzt** eine starke Bewegung macht und liefert:
+
+1. **Alarm-Header** — Bewegungstyp, Magnitude, aktueller Regime/RSI/Entropy/Hurst
+2. **Warum ist das passiert?** — Priorisierte Ursachen-Liste (Entropy-Anstieg, Hurst-Regime, RSI-Divergenz, EMA-Bruch, Volumen-Spike, CVD-Divergenz, Squeeze-Release, Wick-Druck, DB-bekannte Prädiktoren…)
+3. **Historischer Vergleich** — Ähnlichste Events aus der forensics.db (Cosine-Similarity) + Prognose (Hit-Rate, medianer weiterer Move)
+4. **MTF Drill-Down** — Wo ist das beste Entry-Signal gerade? (Entry-Confidence 0–10 pro Timeframe)
+
+Kann auch als **Cron-Job** laufen (z.B. alle 15 Minuten):
+```bash
+*/15 * * * * cd /pfad/zu/probebot && bash run_live.sh >> logs/live_cron.log 2>&1
+```
+
+### 7. Grafische Auswertung (Telegram)
 
 | Chart | Inhalt |
 |-------|--------|
@@ -89,8 +103,10 @@ Alle Charts + JSON-Report werden automatisch per Telegram geschickt.
 ```bash
 git clone https://github.com/Youra82/probebot.git
 cd probebot
-pip install -r requirements.txt
+bash install.sh
 ```
+
+`install.sh` erstellt automatisch ein `.venv`, installiert alle Abhängigkeiten und legt die Verzeichnisse an.
 
 **Abhängigkeiten:**
 ```
@@ -114,7 +130,8 @@ ccxt, pandas, numpy, ta, scipy, scikit-learn, rich, matplotlib
   "lookback_candles": 10,
   "atr_multiplier": 1.5,
   "report_top_n": 5,
-  "drill_down": true
+  "drill_down": true,
+  "scan_candles": 5
 }
 ```
 
@@ -137,22 +154,50 @@ ccxt, pandas, numpy, ta, scipy, scikit-learn, rich, matplotlib
 
 ## Verwendung
 
-```powershell
-# Vollständige Analyse BTC 1D (2022–2025)
-$env:PYTHONPATH = ".\src"
-python -m probebot.run --symbol "BTC/USDT:USDT" --timeframe 1d --start_date 2022-01-01 --end_date 2025-01-01
+### Forensik-Analyse (historisch)
+```bash
+# Interaktiv — fragt nach Symbol, Zeitraum etc.
+bash run_pipeline.sh
 
-# Nur bestimmte Bewegungstypen untersuchen
+# Oder direkt
+bash run_pipeline.sh --symbol "BTC/USDT:USDT" --timeframe 1d \
+    --start_date 2022-01-01 --end_date 2025-01-01
+```
+
+### Live-Scanner (aktuelle Bewegung erklären)
+```bash
+# Prüft ob der Markt GERADE eine starke Bewegung macht und erklärt WARUM
+bash run_live.sh
+
+# Mit anderen Parametern
+bash run_live.sh --timeframe 1h --min_move 1.5 --candles 3
+
+# Ohne Telegram (nur Terminal)
+bash run_live.sh --no_telegram
+```
+
+### Weitere Scripts
+```bash
+bash show_status.sh      # DB-Statistiken, Top-Prädiktoren, letzte Logs
+bash show_results.sh     # Interaktiv: Prädiktoren, Bewegungen, Cluster, Reports
+bash update.sh           # Git pull + Abhängigkeiten updaten
+```
+
+### Direkt per Python (advanced)
+```bash
+export PYTHONPATH=./src
+
+# Bestimmte Bewegungstypen
 python -m probebot.run --movement_types BREAKDOWN,IMPULSE_DOWN
 
 # Spezifisches Datum tief untersuchen
 python -m probebot.run --investigate_date 2024-03-14 --drill_down
 
-# Ohne Telegram (nur Terminal-Output)
+# Ohne Telegram
 python -m probebot.run --no_telegram
 
-# Andere Exchange / anderes Paar
-python -m probebot.run --symbol "ETH/USDT:USDT" --timeframe 4h
+# Live-Modus
+python -m probebot.run --mode live --timeframe 1h --min_move_pct 1.5
 ```
 
 ---
@@ -165,7 +210,7 @@ probebot/
 │   ├── data/
 │   │   └── loader.py           # CCXT Datenloader, multi-TF fetch_window_around
 │   ├── features/
-│   │   ├── technical.py        # ~25 TA-Indikatoren
+│   │   ├── technical.py        # ~25 TA-Indikatoren (pure numpy/pandas)
 │   │   ├── physics.py          # ~15 Physik/Entropie-Features
 │   │   ├── structure.py        # Market Structure (FVG, OB, Swings)
 │   │   ├── volume.py           # Volume-Analyse (CVD, POC, Pressure)
@@ -177,19 +222,27 @@ probebot/
 │   │   ├── miner.py            # Pattern-Mining + Cosine-Similarity
 │   │   ├── correlator.py       # Welch t-Test + K-Means Clustering
 │   │   └── drill_down.py       # MTF Zoom + Entry-Scoring
+│   ├── live/
+│   │   ├── scanner.py          # LiveScanner: erkennt + erklärt aktuelle Moves
+│   │   └── alerter.py          # Telegram-Formatting für Live-Alerts
 │   ├── report/
 │   │   ├── generator.py        # Rich Terminal-Output
 │   │   └── charts.py           # Matplotlib Charts (5 Typen)
 │   ├── utils/
 │   │   └── telegram.py         # Telegram: Text, Photo, Document
-│   └── run.py                  # Haupteinstiegspunkt
+│   └── run.py                  # Haupteinstiegspunkt (--mode full|live)
 ├── artifacts/
 │   ├── db/                     # forensics.db + JSON-Reports
 │   └── charts/                 # generierte PNGs
+├── logs/                       # pipeline_*.log + live_*.log
 ├── settings.json
 ├── requirements.txt
-├── run_investigation.sh        # Linux/Mac Starter
-└── run_investigation.ps1       # Windows PowerShell Starter
+├── install.sh                  # Installation (venv + pip)
+├── update.sh                   # Git pull + Update
+├── run_pipeline.sh             # Forensik-Analyse interaktiv
+├── run_live.sh                 # Live-Scanner (manuell oder cron)
+├── show_status.sh              # DB-Statistiken + Top-Prädiktoren
+└── show_results.sh             # Interaktive Ergebnis-Anzeige
 ```
 
 ---
