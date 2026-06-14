@@ -276,6 +276,13 @@ def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_co
             'avg_mag': move_stats.get(mtype,{}).get('avg_mag', 0),
         }
 
+    # ── 9. Fließtext-Fazit ────────────────────────────────────────────────────
+    fazit_text = _build_fazit_text(
+        coin, timeframe, strategy, strat_name, bias, volatility,
+        avg_mag, max_mag, top_signals, move_stats, total,
+        impulse_n, breakdown_n, reversal_n, squeeze_n,
+    )
+
     return {
         'strategy':     strategy,
         'strat_name':   strat_name,
@@ -295,7 +302,131 @@ def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_co
         'per_type':     per_type,
         'coin':         coin,
         'type_scores':  {k: round(v, 1) for k, v in type_scores.items()},
+        'fazit_text':   fazit_text,
     }
+
+
+def _build_fazit_text(coin, timeframe, strategy, strat_name, bias, volatility,
+                      avg_mag, max_mag, top_signals, move_stats, total,
+                      impulse_n, breakdown_n, reversal_n, squeeze_n):
+    """Generiert einen zusammenhängenden Fließtext als Fazit."""
+
+    parts = []
+
+    # Satz 1: Grundcharakter des Coins
+    dom_type = max(move_stats, key=lambda k: move_stats[k]['n']) if move_stats else '?'
+    dom_n    = move_stats.get(dom_type, {}).get('n', 0)
+    dom_pct  = round(dom_n / total * 100) if total else 0
+
+    if impulse_n / total > 0.5:
+        parts.append(
+            f"{coin} ist ein <b>Momentum-Coin</b> — {impulse_n} von {total} Bewegungen ({int(impulse_n/total*100)}%) "
+            f"waren schnelle Impulse mit durchschnittlich {avg_mag}% Magnitude (Max {max_mag}%). "
+            f"Der Markt bewegt sich in starken, kurzen Schüben statt in langsamen Trends."
+        )
+    elif breakdown_n / total > 0.4:
+        parts.append(
+            f"{coin} zeigt ein <b>Breakout-Muster</b> — {breakdown_n} von {total} Bewegungen ({int(breakdown_n/total*100)}%) "
+            f"entstanden durch Ausbrüche aus Konsolidierungszonen. "
+            f"Der Kurs konsolidiert lange und explodiert dann mit ⌀ {avg_mag}%."
+        )
+    elif reversal_n / total > 0.2:
+        parts.append(
+            f"{coin} neigt zu <b>Mean-Reversion</b> — {reversal_n} Trendwenden in {total} analysierten Bewegungen. "
+            f"Extrembewegungen werden statistisch häufiger umgekehrt als fortgesetzt."
+        )
+    elif squeeze_n / total > 0.1:
+        parts.append(
+            f"{coin} zeigt ausgeprägte <b>Squeeze-Release-Muster</b> — Volatilitätskompression "
+            f"gefolgt von explosiven Ausbrüchen. Ideal für Volatilitäts-basierte Strategien."
+        )
+    else:
+        parts.append(
+            f"{coin} zeigt ein <b>gemischtes Bewegungsprofil</b> mit {total} Bewegungen über den Analysezeitraum "
+            f"(⌀ {avg_mag}%, Max {max_mag}%). Kein dominanter Bewegungstyp erkennbar."
+        )
+
+    # Satz 2: Richtungs-Bias
+    if bias == 'LONG':
+        parts.append(
+            f"Im analysierten Zeitraum gab es einen klaren <b>Long-Bias</b> — "
+            f"Aufwärtsbewegungen überwiegen, was auf ein bullisches Marktumfeld hindeutet."
+        )
+    elif bias == 'SHORT':
+        parts.append(
+            f"Im analysierten Zeitraum dominierte ein <b>Short-Bias</b> — "
+            f"der Markt tendierte abwärts. Short-Positionen waren statistisch häufiger profitabel."
+        )
+    else:
+        parts.append(
+            f"Die Bewegungsrichtungen sind <b>ausgewogen</b> — kein statistischer Long- oder Short-Vorteil "
+            f"im Gesamtzeitraum erkennbar. Beide Richtungen sind gleich handelbar."
+        )
+
+    # Satz 3: Beste Entry-Signale
+    best_by_hit = sorted(top_signals, key=lambda s: -s['hit'])[:3] if top_signals else []
+    if best_by_hit:
+        signal_names = ' + '.join(f"<code>{s['feature']}</code>" for s in best_by_hit)
+        avg_hit = round(sum(s['hit'] for s in best_by_hit) / len(best_by_hit))
+        parts.append(
+            f"Die zuverlässigsten Entry-Signale sind {signal_names} "
+            f"mit einer durchschnittlichen Hit-Rate von <b>{avg_hit}%</b>. "
+            f"Diese Kombination war in {avg_hit}% aller analysierten Bewegungen im Vorfeld erhöht bzw. erniedrigt."
+        )
+
+    # Satz 4: Konkrete Strategie-Empfehlung
+    if strategy == 'MOMENTUM':
+        entry_signals = [s['feature'] for s in best_by_hit if s['cat'] == 'MOMENTUM'][:3]
+        if entry_signals:
+            sig_str = ' + '.join(f"<code>{f}</code>" for f in entry_signals)
+            parts.append(
+                f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+                f"Momentum-Strategie — Entry wenn {sig_str} gleichzeitig in Trendrichtung zeigen. "
+                f"Mean-Reversion-Ansätze sind statistisch unterlegen."
+            )
+        else:
+            parts.append(
+                f"<b>Empfehlung:</b> Momentum-Strategie — Entry nur wenn mehrere Momentum-Indikatoren "
+                f"gleichzeitig in Trendrichtung zeigen. Nicht gegen den laufenden Impuls handeln."
+            )
+    elif strategy == 'BREAKOUT':
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Breakout-Strategie — Entry beim Ausbruch aus Konsolidierung mit Volume-Bestätigung. "
+            f"SL knapp unter dem Ausbruchsniveau, TP basierend auf der vorherigen Range-Größe."
+        )
+    elif strategy == 'MEAN_REV':
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Mean-Reversion-Strategie — Entry bei RSI-Extremwerten (<25 Long / >75 Short) "
+            f"kombiniert mit Hurst-Exponent < 0.45. ADX < 25 als Pflicht-Filter gegen starke Trends."
+        )
+    elif strategy == 'SQUEEZE':
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Squeeze-Release-Strategie — warte auf BB-Kompression (<code>bb_width</code> auf Tiefstand), "
+            f"dann Entry beim ersten starken Ausbruch in die Richtung des Volumens."
+        )
+    elif strategy == 'ORDERFLOW':
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Order-Flow-Strategie — CVD-Divergenz als primäres Signal. "
+            f"Wenn Preis steigt aber CVD fällt → Short-Setup. Institutionelle Order Blocks als Zonen."
+        )
+    elif strategy == 'COMPLEXITY':
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Regime-basierte Strategie — Hurst-Exponent und Entropy als Pflicht-Filter. "
+            f"Nur handeln wenn das Regime klar ist (Hurst > 0.5 für Trend, < 0.45 für Mean-Rev)."
+        )
+    else:
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Kein dominantes Muster — Multi-Signal-Ansatz mit mindestens 3 unabhängigen "
+            f"Bestätigungen aus verschiedenen Kategorien (Momentum, Volume, Structure) verwenden."
+        )
+
+    return ' '.join(parts)
 
 def _fmt_val(v):
     try:
@@ -797,6 +928,12 @@ addTab('fazit','🎯 Fazit & Empfehlung', p => {
   }).join('');
 
   p.innerHTML = `
+  <!-- Fließtext Fazit -->
+  <div style="background:#1a2332;border:1px solid #30363d;border-left:4px solid ${F.strat_color};border-radius:10px;padding:20px 24px;margin-bottom:20px;line-height:1.8">
+    <div style="color:#8b949e;font-size:.75em;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">🎯 Fazit</div>
+    <div style="color:#e6edf3;font-size:.95em">${F.fazit_text||'Keine Analyse verfügbar.'}</div>
+  </div>
+
   <!-- Strategy Header -->
   <div style="background:${F.strat_color}11;border:2px solid ${F.strat_color}44;border-radius:12px;padding:20px 24px;margin-bottom:20px">
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
