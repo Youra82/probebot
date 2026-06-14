@@ -109,12 +109,7 @@ def main():
         )
         return
 
-    tg_msg(
-        f"🔬 <b>PROBEBOT gestartet</b>\n"
-        f"Symbol: <code>{symbol}</code>  TF: <code>{timeframe}</code>\n"
-        f"Zeitraum: {start_date} → {end_date}\n"
-        f"Berechne {timeframe}-Features + Movements..."
-    )
+    # Telegram: nur am Ende 2 Dateien senden — keine Zwischen-Nachrichten
 
     # ─── Lazy imports ────────────────────────────────────────────────────────
     from probebot.data.loader import DataLoader
@@ -129,6 +124,8 @@ def main():
         save_chart, overview_chart, correlation_chart,
         cluster_chart, drill_down_chart, fingerprint_chart,
     )
+    from probebot.report.html_report import generate_html_report
+    from probebot.report.bot_spec import generate_bot_spec
 
     loader = DataLoader(exchange_id=exchange, secret_path=str(SECRET_PATH))
     db = ForensicsDB()
@@ -210,100 +207,77 @@ def main():
                 db.update_drill_down(movement_db_id, dd)
 
             rpt.print_movement_detail(m, dd, similar)
-
-            # ── Telegram: detail per event ──
-            _send_movement_telegram(tg_msg, m, dd, similar, symbol)
     else:
         print(f"\n[5/6] Drill-down skipped")
 
-    # ─── [6] Charts + Telegram ───────────────────────────────────────────────
-    print(f"\n[6/6] Generating charts...")
+    # ─── [6] Charts lokal + 2 Dateien per Telegram ──────────────────────────
+    print(f"\n[6/6] Generating charts + reports...")
 
     chart_dir = ROOT / 'artifacts' / 'charts'
     chart_dir.mkdir(parents=True, exist_ok=True)
     sym_safe = symbol.replace('/', '_').replace(':', '_')
 
-    # Chart 1: Overview
-    print("  Generating overview chart...")
-    p_overview = save_chart(
-        overview_chart,
-        df=df, movements=movements, symbol=symbol, timeframe=timeframe,
-        prefix=f'overview_{sym_safe}_{timeframe}',
-    )
-    if p_overview:
-        tg_photo(p_overview,
-                 f"📊 <b>Overview</b>  {symbol} | {timeframe}\n"
-                 f"{len(movements)} Movements  |  {start_date} → {end_date}")
-
-    # Chart 2: Correlation (predictive features)
-    print("  Generating correlation chart...")
-    p_corr = save_chart(
-        correlation_chart,
-        correlations=correlations, symbol=symbol, timeframe=timeframe,
-        prefix=f'correlation_{sym_safe}_{timeframe}', top_n=12,
-    )
-    if p_corr:
-        tg_photo(p_corr,
-                 f"📈 <b>Predictive Features</b>  {symbol} | {timeframe}\n"
-                 f"Welch's t-Test — welche Indikatoren gehen Bewegungen voraus")
-
-    # Chart 3: Fingerprint (radar)
-    print("  Generating fingerprint chart...")
-    p_finger = save_chart(
-        fingerprint_chart,
-        correlations=correlations, symbol=symbol, timeframe=timeframe,
-        prefix=f'fingerprint_{sym_safe}_{timeframe}',
-    )
-    if p_finger:
-        tg_photo(p_finger,
-                 f"🔍 <b>Pre-Condition Fingerprint</b>  {symbol} | {timeframe}\n"
-                 f"Radar: welche Features sind VOR Bewegungen erhöht/erniedrigt")
-
-    # Chart 4: Cluster
+    # Charts lokal speichern (kein Telegram)
+    print("  Generating charts (lokal)...")
+    save_chart(overview_chart, df=df, movements=movements,
+               symbol=symbol, timeframe=timeframe,
+               prefix=f'overview_{sym_safe}_{timeframe}')
+    save_chart(correlation_chart, correlations=correlations,
+               symbol=symbol, timeframe=timeframe,
+               prefix=f'correlation_{sym_safe}_{timeframe}', top_n=12)
+    save_chart(fingerprint_chart, correlations=correlations,
+               symbol=symbol, timeframe=timeframe,
+               prefix=f'fingerprint_{sym_safe}_{timeframe}')
     if clusters:
-        print("  Generating cluster chart...")
-        p_cluster = save_chart(
-            cluster_chart,
-            clusters=clusters, symbol=symbol, timeframe=timeframe,
-            prefix=f'cluster_{sym_safe}_{timeframe}',
-        )
-        if p_cluster:
-            tg_photo(p_cluster,
-                     f"🧬 <b>Pattern Clusters</b>  {symbol} | {timeframe}\n"
-                     f"Ähnliche Bewegungen nach Vorbedingungen gruppiert")
-
-    # Chart 5: Drill-down charts for top events
+        save_chart(cluster_chart, clusters=clusters,
+                   symbol=symbol, timeframe=timeframe,
+                   prefix=f'cluster_{sym_safe}_{timeframe}')
     if drill_down_results:
-        focus_movements = sorted(movements, key=lambda m: abs(m.magnitude_pct), reverse=True)[:3]
-        for m in focus_movements:
+        for m in sorted(movements, key=lambda x: abs(x.magnitude_pct), reverse=True)[:3]:
             dd = drill_down_results.get(str(m.timestamp))
             if dd:
-                print(f"  Generating drill-down chart for {m.move_type} @ {str(m.timestamp)[:10]}...")
-                p_dd = save_chart(
-                    drill_down_chart,
-                    movement=m, drill_down=dd, symbol=symbol,
-                    prefix=f'drilldown_{sym_safe}_{str(m.timestamp)[:10]}',
-                )
-                if p_dd:
-                    direction_sym = '▼' if m.direction == 'DOWN' else '▲'
-                    tg_photo(p_dd,
-                             f"🔬 <b>MTF Drill-Down</b>  {m.move_type}\n"
-                             f"{direction_sym} {m.magnitude_pct:+.1f}% | {str(m.timestamp)[:16]}")
+                save_chart(drill_down_chart, movement=m, drill_down=dd,
+                           symbol=symbol,
+                           prefix=f'drilldown_{sym_safe}_{str(m.timestamp)[:10]}')
 
-    # ─── Save JSON + send as document ────────────────────────────────────────
-    report_path = str(ROOT / 'artifacts' / 'db' / f'report_{sym_safe}_{timeframe}.json')
-    rpt.save_report_json(
-        report_path, symbol, timeframe, start_date, end_date,
-        movements, correlations, clusters, drill_down_results,
+    # ── Datei 1: HTML-Report ─────────────────────────────────────────────────
+    print("  Generating HTML report...")
+    html_path = str(ROOT / 'artifacts' / 'db' / f'report_{sym_safe}_{timeframe}.html')
+    generate_html_report(
+        symbol=symbol, timeframe=timeframe,
+        start_date=start_date, end_date=end_date,
+        movements=movements, correlations=correlations,
+        clusters=clusters, output_path=html_path,
     )
-    tg_doc(report_path, f"📄 Vollständiger Report: {symbol} {timeframe}")
+    print(f"  HTML saved: {html_path}")
 
-    # ─── Final Telegram summary ───────────────────────────────────────────────
-    _send_final_summary(tg_msg, symbol, timeframe, movements, correlations, clusters)
+    # ── Datei 2: Bot-Spec JSON ───────────────────────────────────────────────
+    print("  Generating bot spec...")
+    spec_path = str(ROOT / 'artifacts' / 'db' / f'bot_spec_{sym_safe}_{timeframe}.json')
+    generate_bot_spec(
+        symbol=symbol, timeframe=timeframe,
+        start_date=start_date, end_date=end_date,
+        movements=movements, correlations=correlations,
+        clusters=clusters, drill_down_results=drill_down_results,
+        output_path=spec_path,
+    )
+    print(f"  Bot-Spec saved: {spec_path}")
+
+    # ── Telegram: nur diese 2 Dateien ────────────────────────────────────────
+    tg_doc(html_path,
+           f"📊 <b>Probebot Report</b> — {symbol} {timeframe}\n"
+           f"{start_date} → {end_date} | {len(movements)} Bewegungen\n"
+           f"Im Browser öffnen für Dark-Theme Dashboard")
+    tg_doc(spec_path,
+           f"🤖 <b>Bot-Spec</b> — {symbol} {timeframe}\n"
+           f"Entry-Bedingungen, Schwellenwerte, Signal-Templates\n"
+           f"Direkt verwendbar für neuen Bot")
 
     db.log_scan(symbol, timeframe, start_date, end_date, len(movements))
     db.close()
-    print("\nProbebot finished.")
+    print(f"\nProbebot finished.")
+    print(f"  HTML:     {html_path}")
+    print(f"  Bot-Spec: {spec_path}")
 
 
 # ─── Telegram helper functions ────────────────────────────────────────────────
