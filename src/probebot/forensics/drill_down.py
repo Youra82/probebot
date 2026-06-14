@@ -6,7 +6,10 @@ lower timeframes (4H → 1H → 15m → 5m → 1m) to:
   1. Identify the structural precursors at each level
   2. Find the earliest detectable signal
   3. Locate the optimal entry point (with rationale)
-  4. Characterize what the market looked like at each zoom level
+  4. Calculate SL and TP levels (structure + ATR + Fibonacci)
+  5. Characterize what the market looked like at each zoom level
+
+Fetching is lazy — each timeframe is only loaded when actually reached in the drill.
 """
 import numpy as np
 import pandas as pd
@@ -137,14 +140,23 @@ class DrillDownEngine:
 
         # Summary stats at center candle
         center_row = df.iloc[center_idx]
+        entry_idx  = entry_candle if entry_candle is not None else center_idx
+        entry_row  = df.iloc[entry_idx]
+        entry_price = _safe_float(entry_row.get('close')) or _safe_float(center_row.get('close')) or 0.0
+
+        # SL/TP analysis
+        sl_tp = self._calculate_sl_tp(df, entry_idx, direction, entry_price)
+
         summary = {
             'timeframe': timeframe,
             'center_ts': str(center_ts),
             'entry_ts': str(entry_ts) if entry_ts is not None else None,
             'entry_candle_idx': entry_candle,
+            'entry_price': round(float(entry_price), 6) if entry_price else None,
             'entry_confidence': entry_score,
             'entry_signals': entry_signals,
             'precursors': precursors,
+            'sl_tp': sl_tp,
             'n_sub_movements': len(sub_movements),
             'sub_movements': [
                 {
@@ -252,6 +264,267 @@ class DrillDownEngine:
                 signals.append(f"{desc} ({feat}={round(float(val), 3)})")
 
         return min(score, 10), signals
+
+    def _calculate_sl_tp(
+        self,
+        df: pd.DataFrame,
+        entry_idx: int,
+        direction: str,
+        entry_price: float,
+        atr_mult: float = 1.5,
+        rr_targets: tuple = (1.5, 2.5, 4.0),
+    ) -> dict:
+        """
+        Berechnet SL und TP auf dem aktuellen Timeframe-Zoom.
+
+        Drei Ansätze:
+          1. ATR-basiert    — SL = entry ± ATR × atr_mult
+          2. Struktur-basiert — SL hinter letztem Swing High/Low
+          3. Fibonacci      — TP basierend auf dem vorherigen Swing
+
+        Nur der Timeframe-eigene Datenschnitt wird verwendet —
+        kein separater API-Call nötig.
+        """
+        if not entry_price or entry_price <= 0 or entry_idx < 0:
+            return {}
+
+        try:
+            window_start = max(0, entry_idx - 50)
+            window = df.iloc[window_start: entry_idx + 1]
+
+            if len(window) < 5:
+                return {}
+
+            # ── ATR ──────────────────────────────────────────────────────────
+            atr_col = 'atr_14' if 'atr_14' in df.columns else None
+            if atr_col:
+                atr_val = _safe_float(df.iloc[entry_idx].get(atr_col)) or 0.0
+            else:
+                # Manuelle Schätzung: avg(H-L) der letzten 14 Kerzen
+                if 'high' in window.columns and 'low' in window.columns:
+                    atr_val = float(np.mean(
+                        (window['high'] - window['low']).values[-14:]
+                    ))
+                else:
+                    atr_val = entry_price * 0.015  # 1.5% Fallback
+
+            sl_atr = (entry_price - atr_val * atr_mult
+                      if direction == 'UP'
+                      else entry_price + atr_val * atr_mult)
+
+            # ── Swing High / Low (Struktur-SL) ────────────────────────────────
+            swing_sl, swing_ts = self._find_swing_sl(window, direction, entry_idx, window_start)
+
+            # ── Kombinierter SL (das engere / konservativere Level) ───────────
+            if swing_sl is not None:
+                if direction == 'UP':
+                    # Long: SL unter Entry → höherer Wert = enger am Entry
+                    sl_used  = max(sl_atr, swing_sl)
+                    sl_label = 'ATR' if sl_atr >= swing_sl else 'Struktur'
+                else:
+                    # Short: SL über Entry → niedrigerer Wert = enger am Entry
+                    sl_used  = min(sl_atr, swing_sl)
+                    sl_label = 'ATR' if sl_atr <= swing_sl else 'Struktur'
+            else:
+                sl_used  = sl_atr
+                sl_label = 'ATR'
+
+            sl_dist = abs(entry_price - sl_used)
+            if sl_dist < 1e-10:
+                return {}
+
+            sl_pct  = round(sl_dist / entry_price * 100, 3)
+
+            # ── TP-Levels (R:R) ───────────────────────────────────────────────
+            tp_levels = []
+            for rr in rr_targets:
+                if direction == 'UP':
+                    tp = entry_price + sl_dist * rr
+                else:
+                    tp = entry_price - sl_dist * rr
+                tp_pct = round(sl_dist * rr / entry_price * 100, 3)
+                tp_levels.append({
+                    'rr':     rr,
+                    'price':  round(tp, 6),
+                    'pct':    tp_pct,
+                    'label':  f'TP{int(rr)} (1:{rr} R:R)',
+                })
+
+            # ── Fibonacci-TPs ─────────────────────────────────────────────────
+            fib_tps = self._fibonacci_tps(window, direction, entry_price)
+
+            # ── Nearest S/R als Zonen ─────────────────────────────────────────
+            sr_levels = self._find_sr_levels(window, entry_price, direction)
+
+            return {
+                'direction':   direction,
+                'entry_price': round(entry_price, 6),
+                'sl': {
+                    'price':      round(sl_used, 6),
+                    'atr_price':  round(sl_atr, 6),
+                    'swing_price':round(swing_sl, 6) if swing_sl is not None else None,
+                    'swing_ts':   swing_ts,
+                    'used_method':sl_label,
+                    'distance_pct':sl_pct,
+                    'atr_value':  round(atr_val, 6),
+                    'atr_mult':   atr_mult,
+                },
+                'tp': tp_levels,
+                'fibonacci': fib_tps,
+                'sr_zones': sr_levels,
+                'risk_reward_summary': (
+                    f"SL -{sl_pct:.2f}%  |  "
+                    f"TP1 +{tp_levels[0]['pct']:.2f}%  "
+                    f"TP2 +{tp_levels[1]['pct']:.2f}%  "
+                    f"TP3 +{tp_levels[2]['pct']:.2f}%"
+                    if len(tp_levels) >= 3 else f"SL -{sl_pct:.2f}%"
+                ),
+            }
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _find_swing_sl(
+        self,
+        window: pd.DataFrame,
+        direction: str,
+        entry_idx: int,
+        window_start: int,
+    ):
+        """
+        Findet den letzten signifikanten Swing Low (für Long) oder
+        Swing High (für Short) im Lookback-Fenster.
+        Gibt (price, timestamp_str) zurück.
+        """
+        if len(window) < 5:
+            return None, None
+
+        col = 'low' if direction == 'UP' else 'high'
+        if col not in window.columns:
+            col = 'close'
+
+        prices = window[col].values
+        n = len(prices)
+
+        # Pivot-Erkennung: lokales Minimum/Maximum (Fenster ±2 Kerzen)
+        pivot_size = 2
+        best_price = None
+        best_ts    = None
+
+        for i in range(pivot_size, n - pivot_size):
+            p = prices[i]
+            window_prices = prices[i - pivot_size: i + pivot_size + 1]
+            if direction == 'UP':
+                # Suche Swing Low: tiefster Punkt in Umgebung
+                if p == min(window_prices):
+                    if best_price is None or p > best_price:  # tiefstes der Kandidaten
+                        best_price = p
+                        ts_col = window.columns[0] if 'timestamp' not in window.columns else 'timestamp'
+                        if 'timestamp' in window.columns:
+                            best_ts = str(window['timestamp'].iloc[i])[:16]
+            else:
+                # Suche Swing High: höchster Punkt
+                if p == max(window_prices):
+                    if best_price is None or p < best_price:  # höchstes der Kandidaten
+                        best_price = p
+                        if 'timestamp' in window.columns:
+                            best_ts = str(window['timestamp'].iloc[i])[:16]
+
+        return best_price, best_ts
+
+    def _fibonacci_tps(
+        self,
+        window: pd.DataFrame,
+        direction: str,
+        entry_price: float,
+    ) -> list:
+        """
+        Fibonacci-Extension TPs basierend auf dem letzten Swing im Fenster.
+        """
+        if len(window) < 10:
+            return []
+
+        try:
+            if 'high' in window.columns and 'low' in window.columns:
+                swing_high = float(window['high'].max())
+                swing_low  = float(window['low'].min())
+            else:
+                swing_high = float(window['close'].max())
+                swing_low  = float(window['close'].min())
+
+            swing_range = swing_high - swing_low
+            if swing_range < 1e-10:
+                return []
+
+            fibs = [0.618, 1.0, 1.272, 1.618, 2.618]
+            result = []
+            for fib in fibs:
+                if direction == 'UP':
+                    tp = swing_low + swing_range * fib
+                else:
+                    tp = swing_high - swing_range * fib
+
+                if direction == 'UP' and tp > entry_price:
+                    pct = (tp - entry_price) / entry_price * 100
+                    result.append({'fib': fib, 'price': round(tp, 6), 'pct': round(pct, 3)})
+                elif direction == 'DOWN' and tp < entry_price:
+                    pct = (entry_price - tp) / entry_price * 100
+                    result.append({'fib': fib, 'price': round(tp, 6), 'pct': round(pct, 3)})
+
+            return result[:4]
+        except Exception:
+            return []
+
+    def _find_sr_levels(
+        self,
+        window: pd.DataFrame,
+        entry_price: float,
+        direction: str,
+        max_levels: int = 4,
+    ) -> list:
+        """
+        Findet die nächsten Support/Resistance-Levels im Fenster.
+        Nur Levels die als TP infrage kommen (in Tradrichtung vor Entry).
+        """
+        if len(window) < 10:
+            return []
+
+        try:
+            close = window['close'].values if 'close' in window.columns else None
+            if close is None:
+                return []
+
+            # Cluster nahe Preispunkte als S/R-Zonen
+            pivot_size = 3
+            levels = []
+            for i in range(pivot_size, len(close) - pivot_size):
+                c = close[i]
+                neighborhood = close[i - pivot_size: i + pivot_size + 1]
+                # Local max → Resistance
+                if c == max(neighborhood) and c > entry_price and direction == 'UP':
+                    levels.append({'price': round(float(c), 6), 'type': 'resistance',
+                                   'pct': round((c - entry_price) / entry_price * 100, 3)})
+                # Local min → Support
+                elif c == min(neighborhood) and c < entry_price and direction == 'DOWN':
+                    levels.append({'price': round(float(c), 6), 'type': 'support',
+                                   'pct': round((entry_price - c) / entry_price * 100, 3)})
+
+            # Deduplizieren (Levels mit < 0.3% Abstand zusammenfassen)
+            merged = []
+            for lv in sorted(levels, key=lambda x: x['price']):
+                if not merged or abs(lv['price'] - merged[-1]['price']) / merged[-1]['price'] > 0.003:
+                    merged.append(lv)
+
+            # Nächste Levels in Tradrichtung
+            if direction == 'UP':
+                merged = [l for l in merged if l['price'] > entry_price]
+                merged.sort(key=lambda x: x['price'])
+            else:
+                merged = [l for l in merged if l['price'] < entry_price]
+                merged.sort(key=lambda x: -x['price'])
+
+            return merged[:max_levels]
+        except Exception:
+            return []
 
     def _identify_precursors(
         self, df: pd.DataFrame, center_idx: int, direction: str

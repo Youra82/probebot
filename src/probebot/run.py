@@ -289,6 +289,8 @@ def main():
     # ── Datei 1: HTML-Report ─────────────────────────────────────────────────
     print("  Generating HTML report...")
     html_path = str(ROOT / 'artifacts' / 'db' / f'report_{sym_safe}_{timeframe}.html')
+    # focus movements = die top-N die auch für Drill-Down genutzt wurden
+    focus_movements = sorted(movements, key=lambda x: abs(x.magnitude_pct), reverse=True)[:top_n]
     generate_html_report(
         symbol=symbol, timeframe=timeframe,
         start_date=start_date, end_date=end_date,
@@ -299,6 +301,8 @@ def main():
         split_date=split_date,
         movements_train_n=len(movements_train),
         movements_test_n=len(movements_test),
+        drill_down_results=drill_down_results,
+        focus_movements=focus_movements,
     )
     print(f"  HTML saved: {html_path}")
 

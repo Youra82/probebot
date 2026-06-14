@@ -23,6 +23,8 @@ def generate_html_report(
     split_date: str = '',
     movements_train_n: int = 0,
     movements_test_n: int = 0,
+    drill_down_results: dict = None,
+    focus_movements: list = None,
 ) -> str:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -116,6 +118,7 @@ def generate_html_report(
             'train_n':      movements_train_n,
             'test_n':       movements_test_n,
         },
+        'trade_setups': _build_trade_setups(drill_down_results, focus_movements),
     }
 
     html = _HTML_TEMPLATE.replace('__DATA_JSON__', json.dumps(payload, ensure_ascii=False))
@@ -501,6 +504,60 @@ def _build_fazit_text(coin, timeframe, strategy, strat_name, bias, volatility,
                 )
 
     return ' '.join(parts)
+
+def _build_trade_setups(drill_down_results: dict, focus_movements: list) -> list:
+    """
+    Baut aus Drill-Down-Ergebnissen strukturierte Trade-Setup-Objekte für den HTML-Tab.
+    Pro Movement: SL/TP auf jedem Timeframe-Zoom, Entry-Confidence, Precursors.
+    """
+    if not drill_down_results or not focus_movements:
+        return []
+
+    setups = []
+    for m in (focus_movements or []):
+        ts_key = str(m.timestamp)
+        dd     = drill_down_results.get(ts_key)
+        if not dd:
+            continue
+
+        # Pro Timeframe: SL/TP und Entry-Info sammeln
+        levels = []
+        for tf, level in dd.items():
+            if not isinstance(level, dict) or 'error' in level:
+                continue
+            sl_tp = level.get('sl_tp', {})
+            if not sl_tp or 'error' in sl_tp:
+                continue
+            levels.append({
+                'tf':          tf,
+                'entry_price': sl_tp.get('entry_price'),
+                'entry_conf':  level.get('entry_confidence', 0),
+                'entry_ts':    level.get('entry_ts'),
+                'sl': sl_tp.get('sl', {}),
+                'tp': sl_tp.get('tp', []),
+                'fibonacci':   sl_tp.get('fibonacci', []),
+                'sr_zones':    sl_tp.get('sr_zones', []),
+                'rr_summary':  sl_tp.get('risk_reward_summary', ''),
+                'regime':      level.get('regime', '?'),
+                'rsi':         level.get('rsi_14'),
+                'adx':         level.get('adx'),
+                'precursors':  level.get('precursors', []),
+                'entry_signals': level.get('entry_signals', []),
+            })
+
+        if not levels:
+            continue
+
+        setups.append({
+            'ts':        ts_key[:16],
+            'mtype':     m.move_type,
+            'direction': m.direction,
+            'magnitude': round(m.magnitude_pct, 2),
+            'levels':    levels,
+        })
+
+    return setups
+
 
 def _fmt_val(v):
     try:
@@ -970,6 +1027,127 @@ window.exportCSV = function(mtype) {
   a.download = `probebot_${mtype}.csv`;
   a.click();
 };
+
+// ── Trade Setup Tab ───────────────────────────────────────────────────────────
+if(D.trade_setups && D.trade_setups.length) {
+  addTab('setups','📐 Trade Setup', p => {
+    const TS = D.trade_setups;
+    let html = `<div style="font-size:.82em;color:#8b949e;margin-bottom:16px">
+      SL/TP-Analyse auf jedem Zoom-Level. Der Bot holt sich nur den Timeframe den er wirklich braucht.
+      Entry = bester Einstiegspunkt im Lookback-Fenster. SL = engeres von ATR-basiert vs. Swing-Level.
+    </div>`;
+
+    TS.forEach((setup, si) => {
+      const dirColor = setup.direction==='UP' ? '#26a69a' : '#ef5350';
+      const dirSym   = setup.direction==='UP' ? '▲' : '▼';
+      html += `<div style="background:#161b22;border-radius:8px;padding:16px;margin-bottom:20px;border-left:4px solid ${dirColor}">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+          <span style="color:${dirColor};font-size:1.1em;font-weight:700">${dirSym} ${setup.mtype.replace(/_/g,' ')}</span>
+          <span style="color:#e0e0e0">@ ${setup.ts}</span>
+          <span style="background:${dirColor}22;color:${dirColor};border-radius:4px;padding:2px 8px;font-size:.8em">${setup.magnitude>0?'+':''}${setup.magnitude}%</span>
+        </div>`;
+
+      // Zoom-Level Accordion
+      setup.levels.forEach(lv => {
+        const sl = lv.sl || {};
+        const tps= lv.tp || [];
+        const fibs= lv.fibonacci || [];
+        const srs = lv.sr_zones || [];
+        const confColor = lv.entry_conf>=7?'#26a69a':lv.entry_conf>=4?'#f5a623':'#8b949e';
+
+        // SL section
+        let slHtml = '';
+        if(sl.price) {
+          const slDir = setup.direction==='UP' ? '↓' : '↑';
+          slHtml = `<div style="background:#0d1117;border-radius:6px;padding:10px;margin-bottom:10px">
+            <div style="font-size:.8em;color:#8b949e;margin-bottom:6px">🛑 Stop Loss (${sl.used_method||'ATR'})</div>
+            <div style="display:flex;gap:20px;flex-wrap:wrap">
+              <div><span style="color:#ef5350;font-weight:700">${slDir} ${sl.price}</span>
+                <span style="color:#8b949e;font-size:.8em"> (-${sl.distance_pct}%)</span></div>
+              ${sl.atr_price?`<div style="color:#8b949e;font-size:.8em">ATR-SL: ${sl.atr_price} (${sl.atr_mult}×ATR=${sl.atr_value?.toFixed?.(4)||'?'})</div>`:''}
+              ${sl.swing_price?`<div style="color:#8b949e;font-size:.8em">Swing-SL: ${sl.swing_price}${sl.swing_ts?' @ '+sl.swing_ts:''}</div>`:''}
+            </div>
+          </div>`;
+        }
+
+        // TP section
+        let tpHtml = '';
+        if(tps.length) {
+          const tpDir = setup.direction==='UP' ? '↑' : '↓';
+          tpHtml = `<div style="background:#0d1117;border-radius:6px;padding:10px;margin-bottom:10px">
+            <div style="font-size:.8em;color:#8b949e;margin-bottom:6px">🎯 Take Profit Levels (R:R)</div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap">`;
+          tps.forEach(tp => {
+            const tpColor = tp.rr >= 3 ? '#26a69a' : tp.rr >= 2 ? '#7ecba1' : '#aaa';
+            tpHtml += `<div style="background:#161b22;border-radius:4px;padding:6px 10px;text-align:center">
+              <div style="color:${tpColor};font-weight:700">${tpDir} ${tp.price}</div>
+              <div style="font-size:.75em;color:#8b949e">+${tp.pct}%</div>
+              <div style="font-size:.72em;color:#555">${tp.label}</div>
+            </div>`;
+          });
+          tpHtml += `</div></div>`;
+        }
+
+        // Fibonacci TPs
+        let fibHtml = '';
+        if(fibs.length) {
+          fibHtml = `<div style="background:#0d1117;border-radius:6px;padding:10px;margin-bottom:10px">
+            <div style="font-size:.8em;color:#8b949e;margin-bottom:6px">🌀 Fibonacci Extensions</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">`;
+          fibs.forEach(f => {
+            fibHtml += `<div style="background:#161b22;border-radius:4px;padding:5px 9px;font-size:.78em">
+              <span style="color:#ce93d8">${f.fib}×</span>
+              <span style="color:#e0e0e0"> ${f.price}</span>
+              <span style="color:#8b949e"> +${f.pct}%</span>
+            </div>`;
+          });
+          fibHtml += `</div></div>`;
+        }
+
+        // S/R Levels
+        let srHtml = '';
+        if(srs.length) {
+          srHtml = `<div style="background:#0d1117;border-radius:6px;padding:10px;margin-bottom:10px">
+            <div style="font-size:.8em;color:#8b949e;margin-bottom:6px">📊 Nächste S/R-Zonen</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">`;
+          srs.forEach(sr => {
+            const c = sr.type==='resistance'?'#ef5350':'#26a69a';
+            srHtml += `<div style="border:1px solid ${c};border-radius:4px;padding:4px 8px;font-size:.78em;color:${c}">${sr.price} (+${sr.pct}%)</div>`;
+          });
+          srHtml += `</div></div>`;
+        }
+
+        // Precursors
+        let precHtml = '';
+        if(lv.precursors && lv.precursors.length) {
+          precHtml = `<div style="font-size:.75em;color:#8b949e;margin-top:8px">
+            <b style="color:#aaa">Vorbedingungen:</b> ${lv.precursors.slice(0,4).join(' · ')}
+          </div>`;
+        }
+
+        html += `<details style="margin-bottom:8px" ${si===0?'open':''}>
+          <summary style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px;padding:8px 12px;background:#0d1117;border-radius:6px;user-select:none">
+            <span style="color:#58a6ff;font-weight:700;min-width:40px">${lv.tf}</span>
+            <span style="color:${confColor};font-size:.85em">Conf: ${lv.entry_conf}/10</span>
+            ${lv.entry_price?`<span style="color:#e0e0e0;font-size:.85em">Entry: <b>${lv.entry_price}</b></span>`:''}
+            ${lv.rr_summary?`<span style="color:#8b949e;font-size:.78em;margin-left:auto">${lv.rr_summary}</span>`:''}
+          </summary>
+          <div style="padding:12px;background:#0d111799;border-radius:0 0 6px 6px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+              <div style="font-size:.8em;color:#8b949e">Regime: <span style="color:#e0e0e0">${lv.regime}</span></div>
+              <div style="font-size:.8em;color:#8b949e">RSI: <span style="color:#e0e0e0">${lv.rsi?.toFixed?.(1)||'?'}</span>  ADX: <span style="color:#e0e0e0">${lv.adx?.toFixed?.(1)||'?'}</span></div>
+            </div>
+            ${slHtml}${tpHtml}${fibHtml}${srHtml}${precHtml}
+          </div>
+        </details>`;
+      });
+
+      html += `</div>`;
+    });
+
+    p.innerHTML = html || '<div class="empty">Kein Drill-Down ausgeführt.</div>';
+  });
+}
 
 // ── Validierung Tab ──────────────────────────────────────────────────────────
 if(D.validation && Object.keys(D.validation).length) {
