@@ -23,22 +23,34 @@ echo -e "       probebot — Market Forensics Pipeline"
 echo -e "${BLUE}=======================================================${NC}"
 echo ""
 
-# ── Symbol ──────────────────────────────────────────────────────────────────
+# ── Symbol(e) ────────────────────────────────────────────────────────────────
 DEFAULT_SYMBOL=$(python3 -c "import json; print(json.load(open('settings.json')).get('symbol','BTC/USDT:USDT'))" 2>/dev/null || echo "BTC/USDT:USDT")
-echo -e "${YELLOW}Symbol (Futures-Format: BTC/USDT:USDT | ETH/USDT:USDT | SOL/USDT:USDT):${NC}"
-echo -e "${CYAN}  Wichtig: Slash und Doppelpunkt beachten — KEIN Leerzeichen!${NC}"
-while true; do
-    read -p "Symbol [Standard: $DEFAULT_SYMBOL]: " SYMBOL_INPUT
-    SYMBOL_INPUT=$(echo "$SYMBOL_INPUT" | tr -d '\r\n' | xargs)
-    SYMBOL="${SYMBOL_INPUT:-$DEFAULT_SYMBOL}"
-    if [[ "$SYMBOL" == *"/"* ]] && [[ "$SYMBOL" == *":"* ]]; then
-        break
-    elif [[ -z "$SYMBOL_INPUT" ]]; then
-        break
+echo -e "${YELLOW}Symbol(e) — Kurzform oder vollstaendig, Leerzeichen = mehrere:${NC}"
+echo -e "${CYAN}  Beispiele: BTC | ETH | BTC ETH SOL | BTC/USDT:USDT${NC}"
+read -p "Symbol(e) [Standard: $DEFAULT_SYMBOL]: " SYMBOL_INPUT
+SYMBOL_INPUT=$(echo "$SYMBOL_INPUT" | tr -d '\r\n' | xargs)
+
+# Kurzform expandieren: BTC → BTC/USDT:USDT
+expand_symbol() {
+    local s="$1"
+    if [[ "$s" == *"/"* ]]; then
+        echo "$s"
     else
-        echo -e "${RED}  Ungültiges Format! Beispiel: BTC/USDT:USDT${NC}"
+        echo "${s}/USDT:USDT"
     fi
-done
+}
+
+# Mehrere Symbole → Array
+SYMBOLS=()
+if [[ -z "$SYMBOL_INPUT" ]]; then
+    SYMBOLS=("$DEFAULT_SYMBOL")
+else
+    for s in $SYMBOL_INPUT; do
+        SYMBOLS+=("$(expand_symbol "$s")")
+    done
+fi
+
+echo -e "${GREEN}  Symbole: ${SYMBOLS[*]}${NC}"
 
 # ── Timeframe ────────────────────────────────────────────────────────────────
 DEFAULT_TF=$(python3 -c "import json; print(json.load(open('settings.json')).get('primary_timeframe','1d'))" 2>/dev/null || echo "1d")
@@ -132,7 +144,7 @@ fi
 echo ""
 echo -e "${BLUE}=======================================================${NC}"
 echo -e "  ${CYAN}Konfiguration:${NC}"
-echo -e "  Symbol:      ${GREEN}$SYMBOL${NC}"
+echo -e "  Symbol(e):   ${GREEN}${SYMBOLS[*]}${NC}"
 echo -e "  Timeframe:   ${GREEN}$TIMEFRAME${NC}"
 echo -e "  Zeitraum:    ${GREEN}$START_DATE → $END_DATE${NC}"
 echo -e "  Min Move:    ${GREEN}$MIN_PCT%${NC}"
@@ -154,37 +166,49 @@ echo ""
 echo -e "${YELLOW}Pipeline startet...${NC}"
 echo ""
 
-# Argumente zusammenbauen
-ARGS=(
-    "--symbol"     "$SYMBOL"
-    "--timeframe"  "$TIMEFRAME"
-    "--start_date" "$START_DATE"
-    "--end_date"   "$END_DATE"
-    "--min_move_pct" "$MIN_PCT"
-    "--top_n"      "$TOP_N"
-    "--mode"       "full"
-    "$DD_FLAG"
-)
-[ -n "$TYPES_INPUT" ] && ARGS+=("--movement_types" "$TYPES_INPUT")
-[ -n "$CLEAR_FLAG"  ] && ARGS+=("$CLEAR_FLAG")
-[ -n "$TG_FLAG"     ] && ARGS+=("$TG_FLAG")
-
 export PYTHONPATH="$SCRIPT_DIR/src"
-$PYTHON -m probebot.run "${ARGS[@]}" 2>&1 | tee logs/pipeline_$(date +%Y%m%d_%H%M%S).log
+OVERALL_EXIT=0
 
-EXIT_CODE=${PIPESTATUS[0]}
+for SYMBOL in "${SYMBOLS[@]}"; do
+    echo -e "${BLUE}--- Symbol: $SYMBOL ---${NC}"
 
-echo ""
-if [ $EXIT_CODE -eq 0 ]; then
-    echo -e "${GREEN}=======================================================${NC}"
-    echo -e "  ${GREEN}Pipeline erfolgreich abgeschlossen!${NC}"
+    ARGS=(
+        "--symbol"     "$SYMBOL"
+        "--timeframe"  "$TIMEFRAME"
+        "--start_date" "$START_DATE"
+        "--end_date"   "$END_DATE"
+        "--min_move_pct" "$MIN_PCT"
+        "--top_n"      "$TOP_N"
+        "--mode"       "full"
+        "$DD_FLAG"
+    )
+    [ -n "$TYPES_INPUT" ] && ARGS+=("--movement_types" "$TYPES_INPUT")
+    [ -n "$CLEAR_FLAG"  ] && ARGS+=("$CLEAR_FLAG")
+    [ -n "$TG_FLAG"     ] && ARGS+=("$TG_FLAG")
+
+    SYM_SAFE="${SYMBOL//[\/:]/_}"
+    LOGFILE="logs/pipeline_${SYM_SAFE}_$(date +%Y%m%d_%H%M%S).log"
+    $PYTHON -m probebot.run "${ARGS[@]}" 2>&1 | tee "$LOGFILE"
+
+    EXIT_CODE=${PIPESTATUS[0]}
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo -e "${RED}Fehler bei $SYMBOL (Exit $EXIT_CODE). Log: $LOGFILE${NC}"
+        OVERALL_EXIT=$EXIT_CODE
+    else
+        echo -e "${GREEN}$SYMBOL abgeschlossen.${NC}"
+    fi
     echo ""
-    echo "  Ergebnisse anzeigen:  ./show_results.sh"
-    echo "  Status anzeigen:      ./show_status.sh"
+done
+
+if [ $OVERALL_EXIT -eq 0 ]; then
+    echo -e "${GREEN}=======================================================${NC}"
+    echo -e "  ${GREEN}Alle Symbole erfolgreich analysiert!${NC}"
+    echo ""
+    echo "  Ergebnisse anzeigen:  bash show_results.sh"
+    echo "  Status anzeigen:      bash show_status.sh"
     echo -e "${GREEN}=======================================================${NC}"
 else
-    echo -e "${RED}Pipeline mit Fehler beendet (Exit Code: $EXIT_CODE).${NC}"
-    echo "Logs: logs/pipeline_*.log"
+    echo -e "${RED}Pipeline mit Fehler beendet. Siehe logs/*.log${NC}"
 fi
 
 deactivate
