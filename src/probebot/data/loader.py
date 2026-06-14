@@ -54,16 +54,17 @@ class DataLoader:
         else:
             until = int(datetime.now().timestamp() * 1000)
 
+        tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
         all_candles = []
         while since < until:
-            candles = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=1000)
+            candles = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=200)
             if not candles:
                 break
             all_candles.extend(candles)
             last_ts = candles[-1][0]
             if last_ts >= until:
                 break
-            since = last_ts + 1
+            since = last_ts + tf_ms
 
         df = pd.DataFrame(all_candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
@@ -90,19 +91,20 @@ class DataLoader:
         start_str = datetime.utcfromtimestamp(since_ms / 1000).strftime('%Y-%m-%d')
         end_str = datetime.utcfromtimestamp(until_ms / 1000).strftime('%Y-%m-%d %H:%M')
 
+        tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
         all_candles = []
         since = since_ms
 
         try:
             while since < until_ms:
-                batch = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=300)
+                batch = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=200)
                 if not batch:
                     break
                 all_candles.extend(batch)
                 last_ts = batch[-1][0]
                 if last_ts >= until_ms:
                     break
-                since = last_ts + 1
+                since = last_ts + tf_ms
         except Exception:
             pass
 

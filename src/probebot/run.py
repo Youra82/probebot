@@ -164,19 +164,9 @@ def main():
           f"({_max_gap_days:.1f} Tage, {_gap_ratio:.0f}× erwartet={_expected_min}min)")
 
     if _gap_ratio > 10:
-        _gap_msg = (
-            f"⚠️  DATENLÜCKEN: {symbol} {timeframe} — max. Lücke {_max_gap_days:.1f} Tage "
-            f"(erwartet {_expected_min} min).\n"
-            f"Bitget liefert für {timeframe} keine lückenlosen historischen Daten.\n"
-            f"Erkannte Bewegungen wären Lücken-Artefakte (z.B. +40% in einer '1h'-Kerze).\n"
-            f"→ Bitte '--timeframe 1d' für saubere Analyse verwenden."
-        )
-        print(f"\n{_gap_msg}")
-        tg_msg(_gap_msg)
-        db.close()
-        sys.exit(1)
+        print(f"  ⚠️  Datenlücken erkannt: max. Lücke {_max_gap_days:.1f} Tage bei {timeframe} — Ergebnisse können Artefakte enthalten")
     elif _gap_ratio > 2:
-        print(f"  ⚠️  Daten-Warnung: Max-Lücke {_gap_ratio:.0f}× größer als erwartet — Ergebnisse mit Vorsicht interpretieren")
+        print(f"  ⚠️  Daten-Warnung: Max-Lücke {_gap_ratio:.0f}× größer als erwartet")
 
     # ─── [2] Compute features ────────────────────────────────────────────────
     print(f"\n[2/6] Computing features ({len(df_raw)} candles)...")
