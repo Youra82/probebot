@@ -70,8 +70,16 @@ printf "  %-6s  %s\n" "4h:"  "2023-01-01 → heute  (2 Jahre, ~4000 Kerzen)"
 printf "  %-6s  %s\n" "1h:"  "2023-06-01 → heute  (1 Jahr,  ~8000 Kerzen)"
 printf "  %-6s  %s\n" "15m:" "2024-01-01 → heute  (6 Monate, ~10000 Kerzen)"
 
-DEFAULT_START=$(python3 -c "import json; print(json.load(open('settings.json')).get('start_date','2022-01-01'))" 2>/dev/null || echo "2022-01-01")
-DEFAULT_END=$(python3 -c "import json; print(json.load(open('settings.json')).get('end_date','2025-01-01'))" 2>/dev/null || echo "2025-01-01")
+# Start-Default ist timeframe-adaptiv (Bitget limitiert historische Daten je TF)
+case "$TIMEFRAME" in
+    1w|3d|1d) DEFAULT_START="2021-01-01" ;;
+    12h|6h|4h|2h) DEFAULT_START="2023-01-01" ;;
+    1h)  DEFAULT_START="2024-01-01" ;;
+    30m|15m) DEFAULT_START="2024-06-01" ;;
+    5m|3m|1m) DEFAULT_START="2025-01-01" ;;
+    *) DEFAULT_START=$(python3 -c "import json; print(json.load(open('settings.json')).get('start_date','2022-01-01'))" 2>/dev/null || echo "2022-01-01") ;;
+esac
+DEFAULT_END=$(date +%Y-%m-%d)
 read -p "Start-Datum [Standard: $DEFAULT_START]: " START_INPUT
 read -p "End-Datum   [Standard: $DEFAULT_END]:   " END_INPUT
 START_INPUT="${START_INPUT//[$'\r\n ']/}"

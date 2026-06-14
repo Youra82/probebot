@@ -201,7 +201,8 @@ def main():
           f"reversal={_tf_p['reversal_min_run']}c → {len(all_movements)} Events")
 
     # Auto-Kalibrierung: optimalen min_move_pct für diesen Coin + Zeitraum finden
-    _user_set_threshold = args.min_move_pct is not None or 'min_move_pct' in settings
+    # Nur expliziter CLI-Wert zählt als "manuell" — settings.json-Wert wird überschrieben
+    _user_set_threshold = args.min_move_pct is not None
     if not _user_set_threshold:
         # Tatsächliche Daten-Zeitspanne (nicht CLI-Args) — Bitget limitiert 1h auf ~5200 Kerzen
         _actual_start = str(df['timestamp'].iloc[0])[:10]
