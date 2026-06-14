@@ -126,6 +126,12 @@ bash show_results.sh      # Prädiktoren, Bewegungen, Cluster, Reports
 > **Hinweis:** `run_live.sh` vergleicht aktuelle Bewegungen mit der historischen Datenbank.  
 > Für beste Ergebnisse erst `run_pipeline.sh` ausführen, damit `forensics.db` gefüllt ist.
 
+**Update (nach Code-Änderungen):**
+```bash
+bash update.sh
+```
+`update.sh` sichert `secret.json`, zieht den aktuellen Stand von GitHub (`git reset --hard origin/main`), stellt `secret.json` wieder her und aktualisiert die Pakete.
+
 ---
 
 ## Installation
