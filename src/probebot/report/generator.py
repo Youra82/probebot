@@ -176,7 +176,7 @@ def print_clusters(clusters: dict):
                 direction_sym = "▲" if feat['t_stat'] > 0 else "▼"
                 panel_text += (
                     f"  {direction_sym} {feat['feature']}: "
-                    f"cluster={feat['cluster_mean']:.3f} vs others={feat['other_mean']:.3f}  "
+                    f"cluster={feat['cluster_mean']:.3f} vs others={feat.get('other_mean', feat.get('global_mean', 0)):.3f}  "
                     f"(t={feat['t_stat']:+.2f})\n"
                 )
             console.print(Panel(panel_text, border_style="magenta"))
@@ -186,7 +186,7 @@ def print_clusters(clusters: dict):
             print(f"\nCluster {cid}: {cluster['n']} events | {cluster['dominant_direction']} | "
                   f"avg {cluster['avg_magnitude_pct']:+.2f}%")
             for feat in cluster['key_features'][:6]:
-                print(f"  {feat['feature']}: {feat['cluster_mean']:.3f} vs {feat['other_mean']:.3f}")
+                print(f"  {feat['feature']}: {feat['cluster_mean']:.3f} vs {feat.get('other_mean', feat.get('global_mean', 0)):.3f}")
 
 
 def save_report_json(
