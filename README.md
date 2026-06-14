@@ -98,6 +98,36 @@ Alle Charts + JSON-Report werden automatisch per Telegram geschickt.
 
 ---
 
+## Schnellstart
+
+```bash
+# 1. Repo klonen
+git clone https://github.com/Youra82/probebot.git
+cd probebot
+
+# 2. Installation (erstellt .venv, installiert alle Pakete)
+bash install.sh
+
+# 3. secret.json anlegen (Telegram + Exchange API)
+cp secret.json.example secret.json
+nano secret.json          # Tokens eintragen
+
+# 4. Historische Forensik-Analyse starten (einmalig zum Lernen)
+bash run_pipeline.sh      # fragt interaktiv nach Symbol, Zeitraum etc.
+
+# 5. Live-Scanner — erklärt was JETZT gerade am Markt passiert
+bash run_live.sh
+
+# 6. Ergebnisse & Status anschauen
+bash show_status.sh       # DB-Statistiken, Top-Prädiktoren, letzte Logs
+bash show_results.sh      # Prädiktoren, Bewegungen, Cluster, Reports
+```
+
+> **Hinweis:** `run_live.sh` vergleicht aktuelle Bewegungen mit der historischen Datenbank.  
+> Für beste Ergebnisse erst `run_pipeline.sh` ausführen, damit `forensics.db` gefüllt ist.
+
+---
+
 ## Installation
 
 ```bash
