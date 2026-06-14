@@ -71,7 +71,9 @@ def print_correlations(
     top_n: int = 15,
 ):
     """Print the most predictive features per movement type."""
-    for move_type, ranked in correlations.items():
+    for move_type, ranked_or_dict in correlations.items():
+        # Support both old (list) and new (dict with 'rows') format
+        ranked = ranked_or_dict.get('rows', ranked_or_dict) if isinstance(ranked_or_dict, dict) else ranked_or_dict
         if not ranked:
             continue
         top = [r for r in ranked if abs(r['t_statistic']) >= 2.0][:top_n]

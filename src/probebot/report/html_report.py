@@ -18,6 +18,11 @@ def generate_html_report(
     correlations: dict,
     clusters: dict,
     output_path: str,
+    validation_results: dict = None,
+    correlations_meta: dict = None,
+    split_date: str = '',
+    movements_train_n: int = 0,
+    movements_test_n: int = 0,
 ) -> str:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,18 +44,29 @@ def generate_html_report(
         }
 
     corr_data = {}
-    for mtype, ranked in correlations.items():
-        corr_data[mtype] = [
-            {
-                'feature':     r['feature'],
-                't':           round(r['t_statistic'], 3),
-                'before':      round(float(r.get('mean_before', 0)), 5),
-                'baseline':    round(float(r.get('mean_all', 0)), 5),
-                'hit':         round(r.get('predictive_pct', 0), 1),
-                'n':           r.get('n_events', 0),
-            }
-            for r in ranked if abs(r.get('t_statistic', 0)) >= 2.0
-        ]
+    for mtype, ranked_or_dict in correlations.items():
+        ranked = ranked_or_dict.get('rows', ranked_or_dict) if isinstance(ranked_or_dict, dict) else ranked_or_dict
+        meta_m   = (correlations_meta or {}).get(mtype, {})
+        composite = meta_m.get('composite', {})
+        corr_data[mtype] = {
+            'rows': [
+                {
+                    'feature':   r['feature'],
+                    't':         round(r['t_statistic'], 3),
+                    'before':    round(float(r.get('mean_before', 0)), 5),
+                    'baseline':  round(float(r.get('mean_all', 0)), 5),
+                    'hit':       round(r.get('predictive_pct', 0), 1),
+                    'n':         r.get('n_events', 0),
+                    'ci_low':    round(r.get('hit_rate_ci_low', 0), 1),
+                    'ci_high':   round(r.get('hit_rate_ci_high', 0), 1),
+                    'cohens_d':  round(r.get('cohens_d', 0), 3),
+                }
+                for r in ranked if abs(r.get('t_statistic', 0)) >= 2.0
+            ],
+            'composite': composite,
+            'low_count_warning': meta_m.get('low_count_warning', False),
+            'n_events_train': meta_m.get('n_events', 0),
+        }
 
     cluster_data = {}
     for cid, cdata in (clusters or {}).items():
@@ -60,20 +76,46 @@ def generate_html_report(
             'top':   cdata.get('top_features', [])[:10],
         }
 
-    fazit = _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_count, movements)
+    # Validation data für JS
+    val_data = {}
+    if validation_results:
+        for mtype, vr in validation_results.items():
+            val_data[mtype] = {
+                'n_train':       vr.get('n_train', 0),
+                'n_test':        vr.get('n_test', 0),
+                'insample_hit':  vr.get('insample_hit', 0),
+                'recall':        vr.get('recall_pct', 0),
+                'precision':     vr.get('precision_pct', 0),
+                'degradation':   vr.get('degradation', 0),
+                'signal_fires':  vr.get('signal_fires', 0),
+                'reliability':   vr.get('reliability', {}),
+                'cond_perf':     vr.get('cond_performance', []),
+                'n_conditions':  vr.get('n_conditions', 0),
+            }
+
+    fazit = _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_count,
+                             movements, validation_results)
 
     payload = {
-        'symbol':    symbol,
-        'timeframe': timeframe,
-        'period':    f'{start_date} → {end_date}',
-        'generated': datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'),
-        'n_total':   len(movements),
-        'up_count':  up_count,
-        'dn_count':  dn_count,
-        'move_stats': move_stats,
+        'symbol':       symbol,
+        'timeframe':    timeframe,
+        'period':       f'{start_date} → {end_date}',
+        'generated':    datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'),
+        'n_total':      len(movements),
+        'up_count':     up_count,
+        'dn_count':     dn_count,
+        'move_stats':   move_stats,
         'correlations': corr_data,
-        'clusters':  cluster_data,
-        'fazit':     fazit,
+        'clusters':     cluster_data,
+        'fazit':        fazit,
+        'validation':   val_data,
+        'split_info': {
+            'split_date':   split_date,
+            'start_date':   start_date,
+            'end_date':     end_date,
+            'train_n':      movements_train_n,
+            'test_n':       movements_test_n,
+        },
     }
 
     html = _HTML_TEMPLATE.replace('__DATA_JSON__', json.dumps(payload, ensure_ascii=False))
@@ -98,7 +140,7 @@ _STRATEGY_NAMES = {
     'HYBRID':      ('🔀 Hybrid',     '#aaa',    'Kombination mehrerer Ansätze — kein klares dominantes Muster.'),
 }
 
-def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_count, movements):
+def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_count, movements, validation_results=None):
     total = sum(s['n'] for s in move_stats.values()) or 1
     coin  = symbol.split('/')[0]
 
@@ -115,7 +157,8 @@ def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_co
     best_signals = []   # {feature, mtype, t, hit, direction, category}
     all_warnings = []
 
-    for mtype, ranked in correlations.items():
+    for mtype, ranked_or_dict in correlations.items():
+        ranked = ranked_or_dict.get('rows', ranked_or_dict) if isinstance(ranked_or_dict, dict) else ranked_or_dict
         n_events = move_stats.get(mtype, {}).get('n', 0)
         if n_events < 8:
             all_warnings.append(f"<b>{mtype}</b>: nur {n_events} Events — statistisch schwach (≥15 empfohlen)")
@@ -144,7 +187,8 @@ def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_co
         cat_scores['SQUEEZE'] += squeeze_n * 2
 
     # Mean-Reversion: wenn hurst oder variance_ratio dominiert
-    for mtype, ranked in correlations.items():
+    for mtype, ranked_or_dict in correlations.items():
+        ranked = ranked_or_dict.get('rows', ranked_or_dict) if isinstance(ranked_or_dict, dict) else ranked_or_dict
         for r in ranked[:15]:
             if r.get('feature','') in ('hurst_30','hurst_60','variance_ratio','autocorr_1'):
                 cat_scores['MEAN_REV'] += abs(r.get('t', r.get('t_statistic',0))) * 0.5
@@ -252,7 +296,8 @@ def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_co
 
     # ── 8. Per-Move-Typ Mini-Fazit ────────────────────────────────────────────
     per_type = {}
-    for mtype, ranked in correlations.items():
+    for mtype, ranked_or_dict in correlations.items():
+        ranked = ranked_or_dict.get('rows', ranked_or_dict) if isinstance(ranked_or_dict, dict) else ranked_or_dict
         n = move_stats.get(mtype, {}).get('n', 0)
         if n < 3:
             continue
@@ -425,6 +470,33 @@ def _build_fazit_text(coin, timeframe, strategy, strat_name, bias, volatility,
             f"Kein dominantes Muster — Multi-Signal-Ansatz mit mindestens 3 unabhängigen "
             f"Bestätigungen aus verschiedenen Kategorien (Momentum, Volume, Structure) verwenden."
         )
+
+    # Satz 5: Out-of-Sample Validierungs-Zusammenfassung
+    if validation_results:
+        robust   = [mt for mt, vr in validation_results.items()
+                    if vr.get('reliability', {}).get('label') in ('ROBUST', 'STABIL')]
+        overfitted = [mt for mt, vr in validation_results.items()
+                      if vr.get('reliability', {}).get('label') == 'OVERFITTED']
+        total_vr = len(validation_results)
+        if total_vr > 0:
+            if len(robust) >= total_vr * 0.6:
+                parts.append(
+                    f"<b>Out-of-Sample Validierung (30% unsichtbare Testdaten):</b> "
+                    f"{len(robust)}/{total_vr} Signaltypen halten auch auf nie gesehenen Daten stand "
+                    f"— die statistischen Muster sind <b style='color:#26a69a'>gut generalisiert</b>."
+                )
+            elif len(overfitted) > total_vr * 0.5:
+                parts.append(
+                    f"<b style='color:#ef5350'>Warnung — Out-of-Sample Validierung:</b> "
+                    f"{len(overfitted)}/{total_vr} Signaltypen brechen auf unsichtbaren Testdaten zusammen "
+                    f"— starker Overfitting-Verdacht. Signale in Echtzeit mit Vorsicht verwenden."
+                )
+            else:
+                parts.append(
+                    f"<b>Out-of-Sample Validierung:</b> Gemischtes Ergebnis — "
+                    f"{len(robust)} stabile Typen, {len(overfitted)} potenzielle Overfits. "
+                    f"Nur die stabilen Signale im Bot verwenden (siehe Validierungs-Tab)."
+                )
 
     return ' '.join(parts)
 
@@ -691,7 +763,8 @@ addTab('overview','📊 Übersicht', p => {
 
   // Best predictors across all types
   let allPred = [];
-  Object.entries(D.correlations).forEach(([mt, rows]) => {
+  Object.entries(D.correlations).forEach(([mt, cd]) => {
+    const rows = cd.rows || [];
     rows.slice(0,5).forEach(r => allPred.push({...r, mtype:mt}));
   });
   allPred.sort((a,b)=>Math.abs(b.t)-Math.abs(a.t));
@@ -717,6 +790,10 @@ addTab('overview','📊 Übersicht', p => {
       <tbody>${predRows}</tbody>
     </table></div>`;
 });
+
+// ── Helper: structured correlations ──────────────────────────────────────────
+function getRows(mtype) { return ((D.correlations[mtype]||{}).rows)||[]; }
+function getMeta(mtype) { return D.correlations[mtype]||{}; }
 
 // ── Per-type Tabs ─────────────────────────────────────────────────────────────
 Object.keys(D.correlations).sort().forEach(mtype => {
@@ -747,17 +824,41 @@ if(Object.keys(D.clusters).length) {
 
 // ── Type Panel Builder ────────────────────────────────────────────────────────
 function buildTypePanel(p, mtype, color) {
-  const rows = D.correlations[mtype] || [];
+  const rows  = getRows(mtype);
+  const meta  = getMeta(mtype);
   const stats = D.move_stats[mtype] || {};
   let sortCol = 't', sortDir = -1;
   let filterText = '', filterT = 2.0;
+
+  // ── Validation badge ──
+  const vd = (D.validation||{})[mtype];
+  let valBadge = '';
+  if(vd) {
+    const rl = vd.reliability || {};
+    valBadge = `<span style="background:${rl.color||'#555'};color:#fff;border-radius:4px;padding:2px 8px;font-size:.75em;margin-left:8px">${rl.icon||''} ${rl.label||'?'} OOS ${vd.recall}%</span>`;
+  }
+
+  // ── Composite score banner ──
+  const comp = meta.composite || {};
+  const compHtml = comp.description
+    ? `<div style="background:#1a2235;border-left:3px solid #f5a623;padding:8px 12px;margin-bottom:10px;font-size:.82em;color:#ccc;border-radius:0 4px 4px 0">
+        <b style="color:#f5a623">🎯 Composite-Signal:</b> ${comp.description}
+       </div>`
+    : '';
+
+  // ── Low count warning ──
+  const warnHtml = meta.low_count_warning
+    ? `<div style="background:#332200;border-left:3px solid #f5a623;padding:6px 12px;margin-bottom:10px;font-size:.8em;color:#f5a623;border-radius:0 4px 4px 0">
+        ⚠️ Nur ${meta.n_events_train||'?'} Trainings-Events — statistische Aussagekraft eingeschränkt (Minimum: 20)
+       </div>`
+    : '';
 
   // ── Stats ──
   const statsHtml = `<div class="stats-row">
     <div class="stat-box"><div class="stat-val" style="color:${color}">${stats.n||0}</div><div class="stat-lbl">Events</div></div>
     <div class="stat-box"><div class="stat-val">${stats.avg_mag||0}%</div><div class="stat-lbl">⌀ Magnitude</div></div>
     <div class="stat-box"><div class="stat-val">${stats.max_mag||0}%</div><div class="stat-lbl">Max Move</div></div>
-    <div class="stat-box"><div class="stat-val">${rows.length}</div><div class="stat-lbl">Prädiktoren</div></div>
+    <div class="stat-box"><div class="stat-val">${rows.length}</div><div class="stat-lbl">Prädiktoren ${valBadge}</div></div>
   </div>`;
 
   // ── Controls ──
@@ -766,7 +867,7 @@ function buildTypePanel(p, mtype, color) {
   const slId   = 'sl-'+mtype;
   const slLblId= 'slLbl-'+mtype;
 
-  p.innerHTML = statsHtml + `
+  p.innerHTML = statsHtml + warnHtml + compHtml + `
     <div class="controls">
       <input type="text" id="${ctrlId}" placeholder="Feature suchen…" oninput="filterTable('${mtype}')">
       <label>t-Stat ≥ <span id="${slLblId}">2.0</span>
@@ -782,6 +883,7 @@ function buildTypePanel(p, mtype, color) {
         <th onclick="sortTable('${mtype}','before',1)"  data-col="before">Vor Move <span class="sort-icon">⇅</span></th>
         <th onclick="sortTable('${mtype}','baseline',1)"data-col="baseline">Gesamt ⌀ <span class="sort-icon">⇅</span></th>
         <th onclick="sortTable('${mtype}','hit',-1)"    data-col="hit">Hit-Rate <span class="sort-icon">⇅</span></th>
+        <th data-col="ci">95% CI</th>
       </tr></thead>
       <tbody id="tbody-${mtype}"></tbody>
     </table></div>`;
@@ -827,6 +929,7 @@ function renderRows(mtype, allRows, color, sortCol, sortDir, text, minT) {
       <td style="color:#e0e0e0">${fmt(r.before)}</td>
       <td style="color:#8b949e">${fmt(r.baseline)}</td>
       <td class="${hitClass(r.hit)}">${r.hit}%</td>
+      <td style="color:#8b949e;font-size:.78em">${r.ci_low&&r.ci_high ? r.ci_low+'%–'+r.ci_high+'%' : '—'}</td>
     </tr>`;
   }).join('');
 }
@@ -836,7 +939,7 @@ window.filterTable = function(mtype) {
   const minT = parseFloat(document.getElementById('sl-'+mtype)?.value || 2);
   const s = getState(mtype);
   s.text = text; s.minT = minT;
-  renderRows(mtype, D.correlations[mtype]||[], typeColor(mtype), s.sortCol, s.sortDir, text, minT);
+  renderRows(mtype, getRows(mtype), typeColor(mtype), s.sortCol, s.sortDir, text, minT);
 };
 
 window.sortTable = function(mtype, col, defDir) {
@@ -851,20 +954,124 @@ window.sortTable = function(mtype, col, defDir) {
     const icon = th.querySelector('.sort-icon');
     if(icon) icon.textContent = isActive ? (s.sortDir>0?'↑':'↓') : '⇅';
   });
-  renderRows(mtype, D.correlations[mtype]||[], typeColor(mtype),
+  renderRows(mtype, getRows(mtype), typeColor(mtype),
     s.sortCol, s.sortDir, s.text||'', s.minT||2);
 };
 
 window.exportCSV = function(mtype) {
-  const rows = D.correlations[mtype] || [];
-  const header = 'feature,t_statistic,vor_move,gesamt_avg,hit_rate_pct\n';
-  const body = rows.map(r=>`${r.feature},${r.t},${r.before},${r.baseline},${r.hit}`).join('\n');
+  const rows = getRows(mtype);
+  const header = 'feature,t_statistic,vor_move,gesamt_avg,hit_rate_pct,ci_low,ci_high\n';
+  const body = rows.map(r=>`${r.feature},${r.t},${r.before},${r.baseline},${r.hit},${r.ci_low||''},${r.ci_high||''}`).join('\n');
   const blob = new Blob([header+body], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `probebot_${mtype}.csv`;
   a.click();
 };
+
+// ── Validierung Tab ──────────────────────────────────────────────────────────
+if(D.validation && Object.keys(D.validation).length) {
+  addTab('validation','✅ Validierung', p => {
+    const V = D.validation;
+    const SI = D.split_info || {};
+
+    // Timeline bar
+    const trainPct = SI.train_n && SI.train_n+SI.test_n>0
+      ? Math.round(SI.train_n/(SI.train_n+SI.test_n)*100) : 70;
+    const testPct  = 100 - trainPct;
+
+    let html = `
+    <div style="background:#0d1117;border-radius:8px;padding:16px;margin-bottom:18px">
+      <div style="font-size:.85em;color:#8b949e;margin-bottom:8px">Datentrennung — strikt temporal (Bot hat Test-Daten NIEMALS gesehen)</div>
+      <div style="display:flex;border-radius:6px;overflow:hidden;height:28px;font-size:.78em;font-weight:700">
+        <div style="width:${trainPct}%;background:#2d4a2d;display:flex;align-items:center;padding:0 10px;color:#7ec87e">
+          70% Training ${SI.start_date||''} → ${SI.split_date||''} (${SI.train_n||'?'} Events)
+        </div>
+        <div style="width:${testPct}%;background:#4a2d2d;display:flex;align-items:center;padding:0 10px;color:#e08080">
+          30% Test ${SI.split_date||''} → ${SI.end_date||''} (${SI.test_n||'?'} Events)
+        </div>
+      </div>
+      <div style="font-size:.75em;color:#8b949e;margin-top:6px">
+        Lernalgorithmen (Welch t-Test, Pattern Mining, Clustering) liefen ausschließlich auf dem Training-Zeitraum.
+        Die Test-Daten wurden nur für die Validierung der gelernten Signale verwendet.
+      </div>
+    </div>`;
+
+    // Overview cards
+    const total = Object.keys(V).length;
+    const robust = Object.values(V).filter(v=>(v.reliability||{}).label==='ROBUST').length;
+    const stabil = Object.values(V).filter(v=>(v.reliability||{}).label==='STABIL').length;
+    const schwach= Object.values(V).filter(v=>(v.reliability||{}).label==='SCHWACH').length;
+    const overfit= Object.values(V).filter(v=>(v.reliability||{}).label==='OVERFITTED').length;
+
+    html += `<div class="stats-row" style="margin-bottom:20px">
+      <div class="stat-box"><div class="stat-val" style="color:#26a69a">${robust}</div><div class="stat-lbl">✅ ROBUST</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:#f5a623">${stabil}</div><div class="stat-lbl">🟡 STABIL</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:#ef8c00">${schwach}</div><div class="stat-lbl">⚠️ SCHWACH</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:#ef5350">${overfit}</div><div class="stat-lbl">❌ OVERFITTED</div></div>
+    </div>`;
+
+    // Per-type validation cards
+    Object.entries(V).forEach(([mtype, vd]) => {
+      const rl = vd.reliability || {};
+      const degradation = vd.degradation || 0;
+      const degColor = degradation > 25 ? '#ef5350' : degradation > 10 ? '#f5a623' : '#26a69a';
+
+      // Per-condition table
+      let condRows = '';
+      (vd.cond_perf||[]).forEach(c=>{
+        const delta = (c.test_hit||0) - (c.train_hit||0);
+        const dc = delta < -15 ? '#ef5350' : delta < 0 ? '#f5a623' : '#26a69a';
+        condRows += `<tr>
+          <td style="font-size:.8em;color:#e0e0e0">${c.feature}</td>
+          <td style="color:#8b949e;font-size:.8em">${c.t_statistic>0?'↑':'↓'} t=${(c.t_statistic||0).toFixed(1)}</td>
+          <td class="${hitClass(c.train_hit)}">${(c.train_hit||0).toFixed(0)}%</td>
+          <td class="${hitClass(c.test_hit)}" style="color:${dc}">${(c.test_hit||0).toFixed(0)}% (${delta>0?'+':''}${delta.toFixed(0)})</td>
+        </tr>`;
+      });
+      const condTbl = condRows ? `<div class="tbl-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>Feature</th><th>Richtung</th><th>Train Hit-Rate</th><th>OOS Hit-Rate (Δ)</th></tr></thead>
+        <tbody>${condRows}</tbody></table></div>` : '';
+
+      html += `<div style="background:#161b22;border-radius:8px;padding:16px;margin-bottom:14px;border-left:4px solid ${rl.color||'#555'}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div>
+            <span style="color:#e6edf3;font-weight:700">${mtype.replace(/_/g,' ')}</span>
+            <span style="background:${rl.color||'#555'};color:#fff;border-radius:4px;padding:2px 8px;font-size:.75em;margin-left:8px">${rl.icon||''} ${rl.label||'?'}</span>
+          </div>
+          <div style="font-size:.78em;color:#8b949e">Train: ${vd.n_train||0} Events | Test: ${vd.n_test||0} Events</div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
+          <div style="text-align:center">
+            <div style="font-size:1.3em;font-weight:700;color:#8b949e">${vd.insample_hit||0}%</div>
+            <div style="font-size:.75em;color:#8b949e">In-Sample Hit</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:1.3em;font-weight:700;color:${rl.color||'#aaa'}">${vd.recall||0}%</div>
+            <div style="font-size:.75em;color:#8b949e">OOS Recall</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:1.3em;font-weight:700;color:${rl.color||'#aaa'}">${vd.precision||0}%</div>
+            <div style="font-size:.75em;color:#8b949e">OOS Precision</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:1.3em;font-weight:700;color:${degColor}">-${degradation||0}%</div>
+            <div style="font-size:.75em;color:#8b949e">Degradation</div>
+          </div>
+        </div>
+
+        <div style="background:#0d1117;border-radius:4px;padding:8px 12px;font-size:.78em;color:${rl.color||'#aaa'};margin-bottom:8px">
+          ${rl.icon||''} ${rl.text||''}
+          ${vd.signal_fires>0 ? ' — Signal feuerte '+vd.signal_fires+'× im Test-Zeitraum' : ''}
+        </div>
+        ${condTbl}
+      </div>`;
+    });
+
+    p.innerHTML = html || '<div class="empty">Keine Validierungsdaten.</div>';
+  });
+}
 
 // ── Fazit Tab ─────────────────────────────────────────────────────────────────
 addTab('fazit','🎯 Fazit & Empfehlung', p => {

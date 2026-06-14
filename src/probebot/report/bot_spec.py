@@ -18,6 +18,8 @@ def generate_bot_spec(
     clusters: dict,
     drill_down_results: dict,
     output_path: str,
+    validation_results: dict = None,
+    correlations_meta: dict = None,
 ) -> str:
     """Erzeugt strukturierte Bot-Spec JSON und gibt den Pfad zurück."""
 
@@ -29,15 +31,19 @@ def generate_bot_spec(
             'timeframe': timeframe,
             'period': {'start': start_date, 'end': end_date},
             'n_movements': len(movements),
+            'oos_validation': 'STRICT 70/30 temporal split — test data never seen by learning algorithms',
             'usage': (
                 'Verwende diese Datei als Grundlage für einen neuen Trading-Bot. '
                 'Die entry_conditions pro Bewegungstyp sind statistisch validierte '
-                'Vorbedingungen (Welch t-Test, p<0.05). '
-                'Kombiniere mindestens 3 Bedingungen mit hoher Hit-Rate für ein Signal.'
+                'Vorbedingungen (Welch t-Test, p<0.05, 70% Trainingsdaten). '
+                'oos_validation zeigt ob die Signale auf den unsichtbaren 30% standhalten. '
+                'Nur ROBUST/STABIL Signale für den Bot verwenden!'
             ),
         },
         'movement_statistics': _build_movement_stats(movements),
-        'entry_conditions': _build_entry_conditions(correlations),
+        'entry_conditions': _build_entry_conditions(correlations, correlations_meta),
+        'oos_validation': _build_oos_section(validation_results),
+        'composite_signals': _build_composite_section(correlations_meta),
         'regime_profile': _build_regime_profile(movements),
         'cluster_fingerprints': _build_cluster_fingerprints(clusters),
         'mtf_entry_timing': _build_mtf_timing(drill_down_results, movements),
@@ -75,13 +81,57 @@ def _build_movement_stats(movements: list) -> dict:
     return stats
 
 
-def _build_entry_conditions(correlations: dict) -> dict:
+def _build_oos_section(validation_results: dict) -> dict:
+    """Out-of-Sample Validierungsergebnisse — nur stabile Signale sollten im Bot verwendet werden."""
+    if not validation_results:
+        return {'note': 'Keine OOS-Validierung durchgeführt.'}
+    result = {}
+    for mtype, vr in validation_results.items():
+        rl = vr.get('reliability', {})
+        result[mtype] = {
+            'reliability':    rl.get('label', '?'),
+            'insample_hit':   vr.get('insample_hit', 0),
+            'oos_recall_pct': vr.get('recall_pct', 0),
+            'oos_precision_pct': vr.get('precision_pct', 0),
+            'degradation':    vr.get('degradation', 0),
+            'n_train':        vr.get('n_train', 0),
+            'n_test':         vr.get('n_test', 0),
+            'use_in_bot':     rl.get('label') in ('ROBUST', 'STABIL'),
+            'warning':        rl.get('text', ''),
+            'per_feature': [
+                {
+                    'feature':   c['feature'],
+                    'train_hit': c['train_hit'],
+                    'oos_hit':   c['test_hit'],
+                    'delta':     round(c['test_hit'] - c['train_hit'], 1),
+                }
+                for c in vr.get('cond_performance', [])
+            ],
+        }
+    return result
+
+
+def _build_composite_section(correlations_meta: dict) -> dict:
+    """Composite-Signale — Kombination der stärksten Features."""
+    if not correlations_meta:
+        return {}
+    result = {}
+    for mtype, meta in correlations_meta.items():
+        comp = meta.get('composite', {})
+        if comp:
+            result[mtype] = comp
+    return result
+
+
+def _build_entry_conditions(correlations: dict, correlations_meta: dict = None) -> dict:
     """
     Pro Bewegungstyp: die statistisch stärksten Vorbedingungen als
     direkt verwendbare Entry-Checks mit Schwellenwerten.
     """
     conditions = {}
-    for mtype, ranked in correlations.items():
+    for mtype, ranked_or_dict in correlations.items():
+        # Support both old (list) and new (dict with 'rows') format
+        ranked = ranked_or_dict.get('rows', ranked_or_dict) if isinstance(ranked_or_dict, dict) else ranked_or_dict
         strong = [r for r in ranked if abs(r.get('t_statistic', 0)) >= 2.5]
         if not strong:
             continue
@@ -235,7 +285,8 @@ def _build_signal_template(correlations: dict) -> dict:
     Pseudocode-Template für die Bot-Implementierung.
     """
     templates = {}
-    for mtype, ranked in correlations.items():
+    for mtype, ranked_or_dict in correlations.items():
+        ranked = ranked_or_dict.get('rows', ranked_or_dict) if isinstance(ranked_or_dict, dict) else ranked_or_dict
         top5 = [r for r in ranked if abs(r.get('t_statistic', 0)) >= 4.0][:5]
         if not top5:
             continue

@@ -166,17 +166,63 @@ def main():
         db.close()
         return
 
-    # ─── [4] Mine patterns + correlations ────────────────────────────────────
-    print(f"\n[4/6] Mining patterns & correlations...")
-    miner.mine_movements(df, movements, symbol, timeframe, clear_existing=args.clear)
-    all_move_types = list({m.move_type for m in movements})
-    correlations = correlator.analyze(df, movements, symbol, timeframe, move_types=all_move_types)
+    # ─── STRICT 70/30 TRAIN/TEST SPLIT ──────────────────────────────────────
+    # KRITISCH: Die 30% Test-Daten sind für den Lernalgorithmus vollständig unsichtbar.
+    # Nur die 70% Training-Daten fließen in Mining, Korrelation und Clustering.
+    split_idx  = int(len(df) * 0.70)
+    split_date = str(df.iloc[split_idx].get('timestamp', df.index[split_idx]))[:10]
+
+    df_train        = df.iloc[:split_idx].copy()   # Lernen NUR auf diesen Daten
+    # df_test       = df.iloc[split_idx:].copy()   # Für Validierung — bleibt unberührt
+
+    movements_train = [m for m in movements if m.idx < split_idx]
+    movements_test  = [m for m in movements if m.idx >= split_idx]
+
+    print(f"\n  Datentrennung (70% / 30%): Split bei {split_date}")
+    print(f"  TRAINING  [{start_date} → {split_date}]: {len(movements_train)} Bewegungen")
+    print(f"  TEST      [{split_date} → {end_date}]:   {len(movements_test)} Bewegungen  ← UNSICHTBAR für Lernen")
+
+    if len(movements_train) < 5:
+        msg = f"⚠️ Zu wenige Trainings-Bewegungen ({len(movements_train)}). Bitte längeren Zeitraum oder kleineren min_move_pct wählen."
+        print(msg)
+        tg_msg(msg)
+        db.close()
+        return
+
+    # ─── [4] Mine patterns + correlations (NUR Training-Daten!) ──────────────
+    print(f"\n[4/6] Mining patterns & correlations (NUR 70% Training: {len(movements_train)} Events)...")
+    miner.mine_movements(df_train, movements_train, symbol, timeframe, clear_existing=args.clear)
+    all_move_types = list({m.move_type for m in movements_train})
+    correlations, correlations_meta = correlator.analyze(
+        df_train, movements_train, symbol, timeframe, move_types=all_move_types
+    )
     rpt.print_correlations(correlations, top_n=top_n)
 
     clusters = {}
-    if len(movements) >= 4:
-        clusters = correlator.cluster_movements(df, movements, n_clusters=min(4, len(movements) // 2))
+    if len(movements_train) >= 4:
+        clusters = correlator.cluster_movements(df_train, movements_train, n_clusters=min(4, len(movements_train) // 2))
         rpt.print_clusters(clusters)
+
+    # ─── [4b] Out-of-Sample Validierung (Test-Daten — Bot hat diese NIE gesehen) ──
+    from probebot.forensics.validator import OutOfSampleValidator
+    validation_results = {}
+    if movements_test and correlations:
+        print(f"\n[4b] Out-of-Sample Validierung ({len(movements_test)} Test-Events ab {split_date})...")
+        validator = OutOfSampleValidator(lookback=3, signal_window=2)
+        validation_results = validator.validate(df, split_idx, movements_test, correlations)
+        # Trainings-Anzahl nachträglich eintragen
+        for mtype, vr in validation_results.items():
+            vr['n_train'] = sum(1 for m in movements_train if m.move_type == mtype)
+        # Zusammenfassung ausgeben
+        robust_cnt = sum(1 for vr in validation_results.values()
+                         if vr['reliability']['label'] in ('ROBUST', 'STABIL'))
+        print(f"  OOS Validierung: {robust_cnt}/{len(validation_results)} Bewegungstypen ROBUST oder STABIL")
+        for mtype, vr in sorted(validation_results.items()):
+            icon = vr['reliability']['icon']
+            print(f"    {icon} {mtype:<28} In-Sample: {vr['insample_hit']:3d}%  OOS-Recall: {vr['recall_pct']:3d}%  "
+                  f"OOS-Precision: {vr['precision_pct']:3d}%  [{vr['reliability']['label']}]")
+    else:
+        print(f"\n[4b] OOS-Validierung übersprungen (keine Test-Events)")
 
     # ─── [5] Drill-Down ──────────────────────────────────────────────────────
     drill_down_results = {}
@@ -248,6 +294,11 @@ def main():
         start_date=start_date, end_date=end_date,
         movements=movements, correlations=correlations,
         clusters=clusters, output_path=html_path,
+        validation_results=validation_results,
+        correlations_meta=correlations_meta,
+        split_date=split_date,
+        movements_train_n=len(movements_train),
+        movements_test_n=len(movements_test),
     )
     print(f"  HTML saved: {html_path}")
 
@@ -260,6 +311,8 @@ def main():
         movements=movements, correlations=correlations,
         clusters=clusters, drill_down_results=drill_down_results,
         output_path=spec_path,
+        validation_results=validation_results,
+        correlations_meta=correlations_meta,
     )
     print(f"  Bot-Spec saved: {spec_path}")
 
