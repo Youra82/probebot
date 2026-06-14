@@ -91,12 +91,7 @@ echo "  GAP_DOWN, GAP_UP"
 read -p "Typen (kommagetrennt, leer = alle): " TYPES_INPUT
 TYPES_INPUT="${TYPES_INPUT//[$'\r\n ']/}"
 
-# ── Min. Bewegungsgroesse ────────────────────────────────────────────────────
-echo ""
-DEFAULT_MINPCT=$(python3 -c "import json; print(json.load(open('settings.json')).get('min_move_pct',2.5))" 2>/dev/null || echo "2.5")
-read -p "Minimale Bewegungsgroesse in % [Standard: $DEFAULT_MINPCT]: " MINPCT_INPUT
-MINPCT_INPUT="${MINPCT_INPUT//[$'\r\n ']/}"
-MIN_PCT="${MINPCT_INPUT:-$DEFAULT_MINPCT}"
+# min_move_pct wird automatisch kalibriert (300 Events/Jahr Ziel) — kein manueller Input nötig
 
 # ── Drill-Down ───────────────────────────────────────────────────────────────
 echo ""
@@ -177,7 +172,6 @@ for SYMBOL in "${SYMBOLS[@]}"; do
         "--timeframe"  "$TIMEFRAME"
         "--start_date" "$START_DATE"
         "--end_date"   "$END_DATE"
-        "--min_move_pct" "$MIN_PCT"
         "--top_n"      "$TOP_N"
         "--mode"       "full"
         "$DD_FLAG"
