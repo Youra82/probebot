@@ -1,17 +1,17 @@
 # src/probebot/utils/exchange.py
-"""Bitget Futures API wrapper for probebot live trading."""
+"""Bitget Futures API wrapper for probebot (learned from ltbbot/dnabot/stbot patterns)."""
 import ccxt
-import pandas as pd
 import logging
 import time
 from typing import Optional
+
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
 class Exchange:
     def __init__(self, account_config: dict):
-        self.account = account_config
         self.exchange = ccxt.bitget({
             'apiKey':   account_config.get('api_key') or account_config.get('apiKey'),
             'secret':   account_config.get('api_secret') or account_config.get('secret'),
@@ -28,12 +28,14 @@ class Exchange:
 
     # ── OHLCV ─────────────────────────────────────────────────────────────────
 
-    def fetch_recent_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
+    def fetch_recent_ohlcv(self, symbol: str, timeframe: str,
+                           limit: int = 250) -> pd.DataFrame:
+        """Fetch up to `limit` recent closed candles."""
         if not self.markets:
             return pd.DataFrame()
-        tf_ms  = self.exchange.parse_timeframe(timeframe) * 1000
-        since  = self.exchange.milliseconds() - tf_ms * limit
-        rows   = []
+        tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
+        since = self.exchange.milliseconds() - tf_ms * limit
+        rows  = []
 
         while since < self.exchange.milliseconds():
             try:
@@ -74,15 +76,15 @@ class Exchange:
                     if item.get('marginCoin') == 'USDT':
                         usdt = float(item.get('available', 0.0))
                         break
-            if usdt == 0.0 and 'total' in balance and 'USDT' in balance.get('total', {}):
-                usdt = float(balance['total']['USDT'])
-            logger.info(f"Verfuegbares Guthaben: {usdt:.2f} USDT")
+            if usdt == 0.0:
+                usdt = float((balance.get('total') or {}).get('USDT') or 0.0)
+            logger.info(f"Guthaben: {usdt:.2f} USDT")
             return usdt
         except ccxt.AuthenticationError as e:
             logger.critical(f"Authentifizierungsfehler: {e}")
             return 0.0
         except Exception as e:
-            logger.error(f"Fehler beim Guthaben-Abruf: {e}", exc_info=True)
+            logger.error(f"Guthaben-Abruf fehlgeschlagen: {e}", exc_info=True)
             return 0.0
 
     # ── Precision ─────────────────────────────────────────────────────────────
@@ -112,15 +114,50 @@ class Exchange:
 
     def fetch_open_positions(self, symbol: str) -> list:
         try:
-            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
+            params    = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
             positions = self.exchange.fetch_positions([symbol], params=params)
             return [
                 p for p in positions
                 if abs(float(p.get('contracts') or p.get('contractSize') or 0)) > 1e-9
             ]
         except Exception as e:
-            logger.error(f"Fehler bei offenen Positionen fuer {symbol}: {e}", exc_info=True)
+            logger.error(f"fetch_open_positions {symbol}: {e}", exc_info=True)
             return []
+
+    # ── Orders ────────────────────────────────────────────────────────────────
+
+    def fetch_open_orders(self, symbol: str) -> list:
+        try:
+            params = {'productType': 'USDT-FUTURES', 'stop': False}
+            return self.exchange.fetch_open_orders(symbol, params=params) or []
+        except Exception as e:
+            logger.error(f"fetch_open_orders {symbol}: {e}")
+            return []
+
+    def fetch_open_trigger_orders(self, symbol: str) -> list:
+        try:
+            params = {'productType': 'USDT-FUTURES', 'stop': True}
+            return self.exchange.fetch_open_orders(symbol, params=params) or []
+        except Exception as e:
+            logger.error(f"fetch_open_trigger_orders {symbol}: {e}")
+            return []
+
+    def fetch_closed_trigger_orders(self, symbol: str, limit: int = 20) -> list:
+        """Fetch recently closed/triggered stop orders (for SL/TP hit detection)."""
+        try:
+            params = {'productType': 'USDT-FUTURES', 'stop': True}
+            return self.exchange.fetch_closed_orders(symbol, limit=limit, params=params) or []
+        except Exception as e:
+            logger.error(f"fetch_closed_trigger_orders {symbol}: {e}")
+            return []
+
+    def fetch_order(self, order_id: str, symbol: str) -> Optional[dict]:
+        try:
+            params = {'productType': 'USDT-FUTURES', 'stop': True}
+            return self.exchange.fetch_order(order_id, symbol, params=params)
+        except Exception as e:
+            logger.error(f"fetch_order {order_id}: {e}")
+            return None
 
     # ── Margin / Leverage ─────────────────────────────────────────────────────
 
@@ -130,12 +167,10 @@ class Exchange:
             self.exchange.set_margin_mode(margin_mode.lower(), symbol, params=params)
             logger.info(f"Margin-Modus {symbol}: {margin_mode}")
         except ccxt.ExchangeError as e:
-            if any(x in str(e) for x in ['Margin mode is the same', '40051']):
-                logger.debug(f"Margin-Modus bereits {margin_mode}.")
-            else:
-                logger.error(f"Fehler Margin-Modus: {e}")
+            if not any(x in str(e) for x in ['Margin mode is the same', '40051']):
+                logger.error(f"set_margin_mode: {e}")
         except Exception as e:
-            logger.error(f"Fehler Margin-Modus: {e}")
+            logger.error(f"set_margin_mode: {e}")
 
     def set_leverage(self, symbol: str, leverage: int, margin_mode: str = 'isolated'):
         try:
@@ -147,17 +182,16 @@ class Exchange:
             self.exchange.set_leverage(leverage, symbol, params=params)
             logger.info(f"Hebel {symbol}: {leverage}x")
         except ccxt.ExchangeError as e:
-            if any(x in str(e) for x in ['Leverage not changed', '40052']):
-                logger.debug(f"Hebel bereits {leverage}x.")
-            else:
-                logger.error(f"Fehler Hebel: {e}")
+            if not any(x in str(e) for x in ['Leverage not changed', '40052']):
+                logger.error(f"set_leverage: {e}")
         except Exception as e:
-            logger.error(f"Fehler Hebel: {e}")
+            logger.error(f"set_leverage: {e}")
 
-    # ── Orders ────────────────────────────────────────────────────────────────
+    # ── Place Orders ──────────────────────────────────────────────────────────
 
     def place_market_order(self, symbol: str, side: str, amount: float,
-                           reduce: bool = False, margin_mode: str = 'isolated'):
+                           reduce: bool = False,
+                           margin_mode: str = 'isolated') -> dict:
         try:
             params = {
                 'productType': 'USDT-FUTURES',
@@ -166,35 +200,53 @@ class Exchange:
                 'hedged':      True,
                 'reduceOnly':  reduce,
             }
-            amt_str = self.amount_to_precision(symbol, amount)
-            logger.info(f"Market Order: {side.upper()} {amt_str} {symbol} reduce={reduce}")
-            return self.exchange.create_order(symbol, 'market', side, float(amt_str), params=params)
+            amt = self.amount_to_precision(symbol, amount)
+            logger.info(f"Market Order: {side.upper()} {amt} {symbol} reduce={reduce}")
+            return self.exchange.create_order(symbol, 'market', side, float(amt), params=params)
         except ccxt.InsufficientFunds as e:
-            logger.error(f"Nicht genuegend Guthaben: {e}")
+            logger.error(f"Nicht genug Guthaben: {e}")
             raise
         except Exception as e:
-            logger.error(f"Fehler Market Order: {e}", exc_info=True)
+            logger.error(f"place_market_order: {e}", exc_info=True)
             raise
 
     def place_trigger_market_order(self, symbol: str, side: str, amount: float,
-                                   trigger_price: float, reduce: bool = False):
+                                   trigger_price: float,
+                                   reduce: bool = False) -> dict:
+        """Place a stop-trigger market order (SL or TP)."""
         try:
-            amt_str = self.amount_to_precision(symbol, amount)
-            tp_str  = self.price_to_precision(symbol, trigger_price)
-            params  = {
+            amt    = self.amount_to_precision(symbol, amount)
+            tp_str = self.price_to_precision(symbol, trigger_price)
+            params = {
                 'triggerPrice': tp_str,
                 'reduceOnly':   reduce,
                 'productType':  'USDT-FUTURES',
                 'marginMode':   'isolated',
                 'hedged':       True,
             }
-            logger.info(f"Trigger Order: {side.upper()} {amt_str} {symbol} @ {tp_str}")
-            return self.exchange.create_order(symbol, 'market', side, float(amt_str), params=params)
+            logger.info(f"Trigger Order: {side.upper()} {amt} {symbol} @ {tp_str}")
+            return self.exchange.create_order(symbol, 'market', side, float(amt), params=params)
         except Exception as e:
-            logger.error(f"Fehler Trigger Order: {e}", exc_info=True)
+            logger.error(f"place_trigger_market_order: {e}", exc_info=True)
             raise
 
+    # ── Cancel ────────────────────────────────────────────────────────────────
+
+    def cancel_trigger_order(self, order_id: str, symbol: str) -> bool:
+        try:
+            params = {'productType': 'USDT-FUTURES', 'stop': True}
+            self.exchange.cancel_order(order_id, symbol, params=params)
+            logger.info(f"Trigger-Order storniert: {order_id}")
+            return True
+        except ccxt.OrderNotFound:
+            logger.debug(f"Trigger-Order {order_id} nicht gefunden (bereits ausgefuehrt?).")
+            return False
+        except Exception as e:
+            logger.error(f"cancel_trigger_order {order_id}: {e}")
+            return False
+
     def cancel_all_orders(self, symbol: str):
+        """Cancel all open orders (normal + trigger). Includes zombie-killer pass."""
         for stop_flag in [False, True]:
             try:
                 self.exchange.cancel_all_orders(
@@ -203,9 +255,19 @@ class Exchange:
                 time.sleep(0.5)
             except ccxt.ExchangeError as e:
                 if not any(x in str(e) for x in ['Order not found', 'no order to cancel', '22001']):
-                    logger.error(f"Fehler beim Stornieren (stop={stop_flag}): {e}")
+                    logger.error(f"cancel_all_orders stop={stop_flag}: {e}")
             except Exception as e:
-                logger.error(f"Fehler beim Stornieren: {e}")
+                logger.error(f"cancel_all_orders: {e}")
+
+        # Zombie-Killer: individually cancel any remaining trigger orders
+        remaining = self.fetch_open_trigger_orders(symbol)
+        for order in remaining:
+            oid = order.get('id')
+            if oid:
+                self.cancel_trigger_order(oid, symbol)
+                time.sleep(0.3)
+
+    # ── Close Position ────────────────────────────────────────────────────────
 
     def close_position(self, symbol: str):
         try:
@@ -216,8 +278,8 @@ class Exchange:
             pos        = positions[0]
             close_side = 'sell' if pos['side'] == 'long' else 'buy'
             amount     = float(pos.get('contracts') or pos.get('contractSize') or 0)
-            logger.info(f"Schliesse {pos['side']} Position {symbol} ({amount} Kontrakte)")
+            logger.info(f"Schliesse {pos['side']} {symbol} ({amount} Kontrakte)")
             return self.place_market_order(symbol, close_side, amount, reduce=True)
         except Exception as e:
-            logger.error(f"Fehler beim Schliessen der Position: {e}")
+            logger.error(f"close_position {symbol}: {e}")
             raise
