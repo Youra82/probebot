@@ -342,7 +342,10 @@ def _write_portfolio_to_settings(results: List[Dict]):
             'active':    True,
         })
 
-    settings['active_strategies'] = active
+    # Write into live_trading_settings.active_strategies — that's where master_runner reads from
+    if 'live_trading_settings' not in settings:
+        settings['live_trading_settings'] = {}
+    settings['live_trading_settings']['active_strategies'] = active
     settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False), encoding='utf-8')
     print(f"  {G}settings.json aktualisiert — {len(active)} aktive Strategien.{NC}")
 

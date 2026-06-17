@@ -7,12 +7,12 @@ run.py aus (--mode check oder --mode signal).
 
 Ablauf:
   1. Alle aktiven Strategien aus settings.json -> live_trading_settings.active_strategies
-  2. FALL A: Strategie hat offene Position -> mode=check
-  3. FALL B: Strategie ist frei           -> mode=signal
+  2. FALL A: Strategie hat offene Position (Tracker status='open') -> mode=check
+  3. FALL B: Strategie ist frei                                    -> mode=signal
      Stoppe wenn max_open_positions erreicht.
 
 Cron-Beispiel (jede Stunde fuer 1h-Strategien):
-  0 * * * * cd /pfad/zu/probebot && .venv/bin/python3 master_runner.py >> logs/master_runner.log 2>&1
+  2 * * * * cd /pfad/zu/probebot && .venv/bin/python3 master_runner.py >> logs/master_runner.log 2>&1
 """
 import json
 import logging
@@ -25,7 +25,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 # Logging
-log_dir  = os.path.join(PROJECT_ROOT, 'logs')
+log_dir = os.path.join(PROJECT_ROOT, 'logs')
 os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -36,18 +36,26 @@ logging.basicConfig(
     ]
 )
 
-ACTIVE_POSITIONS_PATH = os.path.join(PROJECT_ROOT, 'artifacts', 'tracker', 'active_positions.json')
-RUN_SCRIPT            = os.path.join(PROJECT_ROOT, 'src', 'probebot', 'strategy', 'run.py')
+TRACKER_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'tracker')
+RUN_SCRIPT  = os.path.join(PROJECT_ROOT, 'src', 'probebot', 'strategy', 'run.py')
 
 
-def _read_positions() -> list:
-    if not os.path.exists(ACTIVE_POSITIONS_PATH):
-        return []
+def _has_open_position(symbol: str, timeframe: str) -> bool:
+    """
+    Check per-symbol tracker file (written by trade_manager.py).
+    Reads artifacts/tracker/tracker_BTCUSDTUSDT_1h.json directly
+    instead of a single active_positions.json that is never written.
+    """
+    safe = f"{symbol.replace('/', '').replace(':', '')}_{timeframe}"
+    path = os.path.join(TRACKER_DIR, f'tracker_{safe}.json')
+    if not os.path.exists(path):
+        return False
     try:
-        with open(ACTIVE_POSITIONS_PATH) as f:
-            return json.load(f) or []
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        return isinstance(data, dict) and data.get('status') == 'open'
     except Exception:
-        return []
+        return False
 
 
 def _run_strategy(python: str, symbol: str, timeframe: str, mode: str):
@@ -76,7 +84,7 @@ def main():
         python = sys.executable
         logging.warning(f"Kein .venv gefunden, verwende: {python}")
 
-    # Load settings
+    # Load settings + secrets
     try:
         with open(os.path.join(PROJECT_ROOT, 'settings.json'), encoding='utf-8') as f:
             settings = json.load(f)
@@ -93,40 +101,35 @@ def main():
         logging.critical("Kein 'probebot'-Account in secret.json. Bitte eintragen.")
         return
 
-    live  = settings.get('live_trading_settings', {})
-    max_p = int(live.get('max_open_positions', 5))
+    live   = settings.get('live_trading_settings', {})
+    max_p  = int(live.get('max_open_positions', 5))
     strats = [s for s in live.get('active_strategies', [])
               if isinstance(s, dict) and s.get('active', False)]
 
     if not strats:
         logging.warning(
-            "Keine aktiven Strategien in settings.json -> live_trading_settings -> active_strategies.\n"
-            "Tipp: Erst show_results.sh -> Mode 3 ausfuehren um Portfolio zu erstellen."
+            "Keine aktiven Strategien in settings.json "
+            "-> live_trading_settings -> active_strategies.\n"
+            "Tipp: Erst show_results.sh -> Mode 3 ausfuehren."
         )
         return
 
     logging.info(f"Aktive Strategien: {len(strats)} | Max. Positionen: {max_p}")
 
-    active_positions = _read_positions()
-    active_keys      = {(p['symbol'], p['timeframe']) for p in active_positions}
-    strat_keys       = {(s['symbol'], s['timeframe']) for s in strats}
+    # ── A: Check open positions (per-symbol tracker files) ────────────────────
+    open_strats = [(s['symbol'], s['timeframe']) for s in strats
+                   if _has_open_position(s['symbol'], s['timeframe'])]
 
-    # ── A: Check open positions ───────────────────────────────────────────────
-    to_check = [(s['symbol'], s['timeframe']) for s in strats
-                if (s['symbol'], s['timeframe']) in active_keys]
-
-    if to_check:
-        logging.info(f"Offene Trades: {len(to_check)} — pruefe Positionen...")
-        for sym, tf in to_check:
+    if open_strats:
+        logging.info(f"Offene Trades: {len(open_strats)} — pruefe Positionen...")
+        for sym, tf in open_strats:
             _run_strategy(python, sym, tf, 'check')
     else:
         logging.info("Keine offenen Trades.")
 
     # ── B: Signal check for free strategies ───────────────────────────────────
-    active_positions = _read_positions()
-    active_keys      = {(p['symbol'], p['timeframe']) for p in active_positions
-                        if (p['symbol'], p['timeframe']) in strat_keys}
-    n_open = len(active_keys)
+    n_open = sum(1 for s in strats
+                 if _has_open_position(s['symbol'], s['timeframe']))
 
     if n_open >= max_p:
         logging.info(f"Max. Positionen ({max_p}) belegt. Kein Signal-Check.")
@@ -135,24 +138,22 @@ def main():
 
     logging.info(
         f"Offene Trades: {n_open}/{max_p} — "
-        f"Signal-Check fuer {len(strats) - n_open} freie Strategie(n)..."
+        f"Signal-Check fuer freie Strategie(n)..."
     )
 
     for s in strats:
         sym = s['symbol']
         tf  = s['timeframe']
 
-        if (sym, tf) in active_keys:
+        if _has_open_position(sym, tf):
             logging.info(f"  {sym} ({tf}): in Trade — ueberspringe.")
             continue
 
         _run_strategy(python, sym, tf, 'signal')
 
-        # Re-read state after each signal run
-        active_positions = _read_positions()
-        active_keys      = {(p['symbol'], p['timeframe']) for p in active_positions
-                            if (p['symbol'], p['timeframe']) in strat_keys}
-        n_open = len(active_keys)
+        # Re-check open count after each signal run
+        n_open = sum(1 for st in strats
+                     if _has_open_position(st['symbol'], st['timeframe']))
 
         if n_open >= max_p:
             logging.info(f"Max. Positionen ({max_p}) erreicht — stoppe Signal-Suche.")
