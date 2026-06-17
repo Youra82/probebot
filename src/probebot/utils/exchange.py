@@ -230,6 +230,35 @@ class Exchange:
             logger.error(f"place_trigger_market_order: {e}", exc_info=True)
             raise
 
+    def place_trailing_stop_order(self, symbol: str, side: str, amount: float,
+                                  activation_price: float,
+                                  trailing_pct: float,
+                                  reduce: bool = True) -> dict:
+        """
+        Place a trailing stop order (learned from dnabot/stbot pattern).
+        activation_price: price at which trailing starts tracking
+        trailing_pct:     callback percentage (e.g. 0.8 = 0.8%)
+        """
+        try:
+            amt     = self.amount_to_precision(symbol, amount)
+            act_str = self.price_to_precision(symbol, activation_price)
+            params  = {
+                'triggerPrice':    act_str,
+                'trailingPercent': str(trailing_pct),
+                'reduceOnly':      reduce,
+                'productType':     'USDT-FUTURES',
+                'marginMode':      'isolated',
+                'hedged':          True,
+            }
+            logger.info(
+                f"Trailing Stop: {side.upper()} {amt} {symbol} "
+                f"aktiviert bei {act_str} | Callback {trailing_pct}%"
+            )
+            return self.exchange.create_order(symbol, 'market', side, float(amt), params=params)
+        except Exception as e:
+            logger.error(f"place_trailing_stop_order: {e}", exc_info=True)
+            raise
+
     # ── Cancel ────────────────────────────────────────────────────────────────
 
     def cancel_trigger_order(self, order_id: str, symbol: str) -> bool:

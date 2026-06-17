@@ -109,6 +109,8 @@ def _compute_signal(symbol: str, timeframe: str,
     min_score    = float(sig_cfg.get('min_score', 20.0))
     min_hit_rate = float(sig_cfg.get('min_hit_rate', 0.4))
     tradeable    = config.get('strategy', {}).get('tradeable_types', [])
+    # Strategy type chosen by optimizer (BREAKOUT/MOMENTUM/…); used in trade_params
+    strategy_type = config.get('strategy', {}).get('type', '')
 
     best = None
     for entry in tradeable:
@@ -131,14 +133,38 @@ def _compute_signal(symbol: str, timeframe: str,
                     'n_total':     n_total,
                     'hit_rate':    round(hit_rate, 3),
                     'entry_price': last_row.get('close', 0),
+                    'strategy':    strategy_type or move_type.split('_')[0],
+                    'last_row':    last_row,
                 }
 
     if best:
         logger.info(
             f"Signal: {best['side'].upper()} | {best['move_type']} | "
+            f"Strategie: {best['strategy']} | "
             f"Score={best['score']} | Hit={best['hit_rate']:.0%} "
             f"({best['n_met']}/{best['n_total']})"
         )
+
+        # Pre-compute trade_params with estimated entry price for position sizing
+        from probebot.strategy.signal_logic import compute_trade_params
+        try:
+            best['trade_params'] = compute_trade_params(
+                strategy    = best['strategy'],
+                move_type   = best['move_type'],
+                last_row    = last_row,
+                entry_price = float(best['entry_price']),
+                side        = best['side'],
+                config_risk = config.get('risk', {}),
+            )
+            logger.info(
+                f"TradeParams: SL={best['trade_params'].sl_price:.6f} "
+                f"[{best['trade_params'].sl_source}] | "
+                f"TP={'trailing' if best['trade_params'].use_trailing else str(round(best['trade_params'].tp_price, 6))} "
+                f"[{best['trade_params'].tp_source}]"
+            )
+        except Exception as e:
+            logger.error(f"compute_trade_params fehlgeschlagen: {e}")
+            best = None
     else:
         logger.info(f"Kein Signal fuer {symbol} ({timeframe}).")
     return best
