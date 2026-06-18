@@ -128,21 +128,28 @@ def run_optimizer(
             raise optuna.exceptions.TrialPruned()
 
         counter[0] += 1
-        if counter[0] % 10 == 0 or counter[0] == n_trials:
-            done = len([t for t in study.trials if t.state.name == 'COMPLETE'])
-            pruned = len([t for t in study.trials if t.state.name == 'PRUNED'])
-            best = study.best_value if study.best_trial else None
-            best_s = f"{best:+.1f}%" if best is not None else "—"
-            print(f"  Trial {counter[0]:4d}/{n_trials}  OK:{done}  "
-                  f"Pruned:{pruned}  Best:{best_s}", flush=True)
+        done   = len([t for t in study.trials if t.state.name == 'COMPLETE'])
+        pruned = len([t for t in study.trials if t.state.name == 'PRUNED'])
+        best   = study.best_value if study.best_trial else None
+        best_s = f"{best:+.2f}%" if best is not None else "      —"
+        pct    = counter[0] / n_trials * 100
+        filled = int(40 * counter[0] / n_trials)
+        bar    = '█' * filled + '░' * (40 - filled)
+        print(f"\r  [{bar}] {pct:5.1f}%  {counter[0]:4d}/{n_trials}"
+              f"  Best:{best_s}  ✓{done}  ✗{pruned}   ",
+              end='', flush=True)
 
         return result['pnl_pct']
 
-    print(f"  Optimiere... (Strg+C zum Abbrechen)")
+    print(f"  [{' ' * 40}]   0.0%     0/{n_trials}  Best:      —  ✓0  ✗0   ",
+          end='', flush=True)
     try:
         study.optimize(objective, n_trials=n_trials)
     except KeyboardInterrupt:
-        print(f"\n  Abgebrochen — verwende bestes bisheriges Ergebnis")
+        pass
+    print()  # Zeilenumbruch nach fertigem Balken
+    if not (study.best_trial is None):
+        print(f"  Abgebrochen — verwende bestes bisheriges Ergebnis")
 
     completed = [t for t in study.trials if t.state.name == 'COMPLETE']
     if not completed:
