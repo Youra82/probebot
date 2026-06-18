@@ -37,11 +37,15 @@ def run_optimizer(
     min_win_rate: float = 35.0,
     mode: str = 'best_profit',    # 'strict' | 'best_profit'
     output_dir: str = None,
+    force: bool = False,          # True = bereits vorhandene Config überschreiben
 ) -> str | None:
     """
     Optimize signal + risk parameters on the training slice.
     Writes config_SYMBOL_TF.json to output_dir.
     Returns path to written config, or None on failure.
+
+    Overfitting-Schutz: Wenn Config bereits existiert und force=False,
+    wird der Optimizer übersprungen (verhindert Trial-Akkumulation).
     """
     try:
         import optuna
@@ -49,6 +53,26 @@ def run_optimizer(
     except ImportError:
         print("  [optimizer] ERROR: optuna nicht installiert. Bitte: pip install optuna")
         return None
+
+    # ── Overfitting-Sperre: skip wenn Config schon existiert ──────────────────
+    sym_safe    = symbol.replace('/', '_').replace(':', '_')
+    _out_dir    = Path(output_dir) if output_dir else ROOT / 'src' / 'probebot' / 'strategy' / 'configs'
+    config_path = _out_dir / f'config_{sym_safe}_{timeframe}.json'
+
+    if config_path.exists() and not force:
+        try:
+            existing  = json.loads(config_path.read_text(encoding='utf-8'))
+            old_meta  = existing.get('_meta', {})
+            old_pnl   = old_meta.get('insample_pnl_pct', 0)
+            old_trials= old_meta.get('n_trials_total', 0)
+            old_date  = str(old_meta.get('optimized_at', '?'))[:10]
+        except Exception:
+            old_pnl, old_trials, old_date = 0, 0, '?'
+        print(f"  [optimizer] ⚠️  Config existiert bereits!")
+        print(f"  [optimizer]    Optimiert: {old_date}  |  Trials: {old_trials}  |  PnL: {old_pnl:+.1f}%")
+        print(f"  [optimizer]    Überspringe — verhindert Overfitting durch Trial-Akkumulation.")
+        print(f"  [optimizer]    Für Neuoptimierung: run_pipeline.sh → 'DB loeschen = j'")
+        return str(config_path)
 
     from probebot.analysis.backtester import run_backtest
 
@@ -86,16 +110,23 @@ def run_optimizer(
           f"Trials: {n_trials}  |  Modus: {mode}")
 
     # ── Optuna study ──────────────────────────────────────────────────────────
-    sym_safe   = symbol.replace('/', '_').replace(':', '_')
     study_name = f"probebot_{sym_safe}_{timeframe}_{mode}"
     db_path    = ROOT / 'artifacts' / 'db' / 'optuna_probebot.db'
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    import optuna
     storage = optuna.storages.RDBStorage(
         url=f"sqlite:///{db_path}",
         engine_kwargs={'connect_args': {'timeout': 30}},
     )
+
+    # Bei force=True: alte Study löschen damit Trial-Zähler bei 0 startet
+    if force:
+        try:
+            optuna.delete_study(study_name=study_name, storage=storage)
+            print(f"  [optimizer] Alte Optuna-Study gelöscht ({study_name})")
+        except Exception:
+            pass  # Study existierte nicht — kein Problem
+
     study = optuna.create_study(
         direction='maximize',
         study_name=study_name,
@@ -258,6 +289,8 @@ def main():
     parser.add_argument('--min_wr',     type=float, default=35.0)
     parser.add_argument('--mode',       default='best_profit', choices=['strict', 'best_profit'])
     parser.add_argument('--output',     default=None)
+    parser.add_argument('--force',      action='store_true',
+                        help='Bestehende Config + Optuna-Study löschen und neu optimieren')
     args = parser.parse_args()
 
     print(f"\nProbebot Optimizer")
@@ -286,6 +319,7 @@ def main():
         min_win_rate=args.min_wr,
         mode=args.mode,
         output_dir=args.output,
+        force=args.force,
     )
 
 

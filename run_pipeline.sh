@@ -174,8 +174,42 @@ read -p "Bestehende DB-Eintraege loeschen? (j/n) [Standard: n]: " CLEAR_INPUT
 CLEAR_INPUT="${CLEAR_INPUT//[$'\r\n ']/}"
 if [[ "$CLEAR_INPUT" =~ ^[jJyY] ]]; then
     CLEAR_FLAG="--clear"
+    OPT_FORCE="--force"
+    echo ""
+    echo -e "  ${YELLOW}Vollstaendiger Reset — loesche alle Artifacts fuer gewaehlte Kombinationen:${NC}"
+    for _TF in "${TIMEFRAMES[@]}"; do
+        for _SYM in "${SYMBOLS[@]}"; do
+            _SAFE="${_SYM//[\/:]/_}"
+            # Optimizer-Config loeschen
+            _CFG="src/probebot/strategy/configs/config_${_SAFE}_${_TF}.json"
+            if [ -f "$_CFG" ]; then
+                rm -f "$_CFG"
+                echo -e "  ${RED}Geloescht:${NC} $_CFG"
+            fi
+            # Optuna-Study loeschen
+            python3 -c "
+import sys, os
+sys.path.insert(0, 'src')
+try:
+    import optuna
+    db = 'artifacts/db/optuna_probebot.db'
+    if os.path.exists(db):
+        storage = 'sqlite:///' + db
+        for m in ['best_profit', 'strict']:
+            sname = f'probebot_${_SAFE}_${_TF}_{m}'
+            try:
+                optuna.delete_study(study_name=sname, storage=storage)
+                print(f'  Optuna-Study geloescht: {sname}')
+            except Exception:
+                pass
+except Exception as e:
+    pass
+" 2>/dev/null
+        done
+    done
 else
     CLEAR_FLAG=""
+    OPT_FORCE=""
 fi
 
 # ── Telegram ─────────────────────────────────────────────────────────────────
@@ -372,7 +406,8 @@ if [[ "$OPT_INPUT" =~ ^[jJyY] ]]; then
                 --trials    "$TRIALS" \
                 --capital   "$CAPITAL" \
                 --max_dd    "$MAXDD" \
-                --mode      "$OPT_MODE"
+                --mode      "$OPT_MODE" \
+                ${OPT_FORCE}
 
             OPT_EXIT=$?
             if [ $OPT_EXIT -eq 0 ]; then
