@@ -321,13 +321,26 @@ def main():
         for mtype, vr in validation_results.items():
             vr['n_train'] = sum(1 for m in movements_train if m.move_type == mtype)
         # Zusammenfassung ausgeben
-        robust_cnt = sum(1 for vr in validation_results.values()
-                         if vr['reliability']['label'] in ('ROBUST', 'STABIL'))
-        print(f"  OOS Validierung: {robust_cnt}/{len(validation_results)} Bewegungstypen ROBUST oder STABIL")
+        robust_cnt  = sum(1 for vr in validation_results.values()
+                          if vr['reliability']['label'] in ('ROBUST', 'STABIL'))
+        bot_cnt     = sum(1 for vr in validation_results.values()
+                          if vr['reliability']['label'] in ('ROBUST', 'STABIL')
+                          and vr.get('precision_pct', 0) >= 10
+                          and vr.get('n_train', 0) >= 20)
+        print(f"  OOS Validierung: {robust_cnt}/{len(validation_results)} ROBUST/STABIL  →  {bot_cnt} für Bot verwendbar")
         for mtype, vr in sorted(validation_results.items()):
-            icon = vr['reliability']['icon']
-            print(f"    {icon} {mtype:<28} In-Sample: {vr['insample_hit']:3d}%  OOS-Recall: {vr['recall_pct']:3d}%  "
-                  f"OOS-Precision: {vr['precision_pct']:3d}%  [{vr['reliability']['label']}]")
+            n_tr   = vr.get('n_train', 0)
+            prec   = vr.get('precision_pct', 0)
+            label  = vr['reliability']['label']
+            in_bot = label in ('ROBUST', 'STABIL') and prec >= 10 and n_tr >= 20
+            icon   = vr['reliability']['icon']
+            if label in ('ROBUST', 'STABIL') and not in_bot:
+                excl = 'n<20' if n_tr < 20 else 'prec<10%'
+                suffix = f"  ⛔ excl ({excl})"
+            else:
+                suffix = ""
+            print(f"    {icon} {mtype:<28} n={n_tr:3d}  In-Sample: {vr['insample_hit']:3d}%  "
+                  f"OOS-Recall: {vr['recall_pct']:3d}%  OOS-Precision: {prec:3d}%  [{label}]{suffix}")
     else:
         print(f"\n[4b] OOS-Validierung übersprungen (keine Test-Events)")
 
