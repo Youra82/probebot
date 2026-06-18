@@ -609,36 +609,6 @@ def _build_fazit_text(coin, timeframe, strategy, strat_name, bias, volatility,
             f"Multi-Signal-Ansatz — mindestens 3 Bestätigungen aus verschiedenen Kategorien "
             f"(Momentum, Volume, Struktur) kombinieren. Kein Einzel-Signal reicht hier aus."
         )
-    elif strategy == 'MEAN_REV':
-        parts.append(
-            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
-            f"Mean-Reversion-Strategie — Entry bei RSI-Extremwerten (<25 Long / >75 Short) "
-            f"kombiniert mit Hurst-Exponent < 0.45. ADX < 25 als Pflicht-Filter gegen starke Trends."
-        )
-    elif strategy == 'SQUEEZE':
-        parts.append(
-            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
-            f"Squeeze-Release-Strategie — warte auf BB-Kompression (<code>bb_width</code> auf Tiefstand), "
-            f"dann Entry beim ersten starken Ausbruch in die Richtung des Volumens."
-        )
-    elif strategy == 'ORDERFLOW':
-        parts.append(
-            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
-            f"Order-Flow-Strategie — CVD-Divergenz als primäres Signal. "
-            f"Wenn Preis steigt aber CVD fällt → Short-Setup. Institutionelle Order Blocks als Zonen."
-        )
-    elif strategy == 'COMPLEXITY':
-        parts.append(
-            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
-            f"Regime-basierte Strategie — Hurst-Exponent und Entropy als Pflicht-Filter. "
-            f"Nur handeln wenn das Regime klar ist (Hurst > 0.5 für Trend, < 0.45 für Mean-Rev)."
-        )
-    else:
-        parts.append(
-            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
-            f"Kein dominantes Muster — Multi-Signal-Ansatz mit mindestens 3 unabhängigen "
-            f"Bestätigungen aus verschiedenen Kategorien (Momentum, Volume, Structure) verwenden."
-        )
 
     # Satz 5: Out-of-Sample Validierungs-Zusammenfassung
     if validation_results:
