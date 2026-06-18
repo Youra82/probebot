@@ -118,12 +118,23 @@ else
 fi
 
 read -p "Start-Datum [Standard: $PROMPT_START_HINT]: " START_INPUT
-read -p "End-Datum   [Standard: $DEFAULT_END]:   " END_INPUT
 START_INPUT=$(echo "$START_INPUT" | tr -d '\r\n' | xargs)
-END_INPUT=$(echo "$END_INPUT"   | tr -d '\r\n' | xargs)
-END_DATE="${END_INPUT:-$DEFAULT_END}"
-# Leere Eingabe = per-TF-Auto im Haupt-Loop; Datum = gilt fuer alle TFs
 MANUAL_START="$START_INPUT"
+
+echo ""
+echo -e "  ${CYAN}┌─────────────────────────────────────────────────────┐${NC}"
+echo -e "  ${CYAN}│${NC}  ${YELLOW}70 / 30 REGEL — automatisch erzwungen:${NC}            ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}                                                     ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  ${GREEN}70% Training${NC}  Forensik + Optimizer lernen NUR hier  ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  ${RED}30% OOS${NC}       Optimizer sieht diese Zeit NIEMALS    ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  ${RED}30% OOS${NC}       show_results.sh prueft hier (ehrlich)  ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}                                                     ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  split_idx wird automatisch berechnet + gespeichert ${CYAN}│${NC}"
+echo -e "  ${CYAN}└─────────────────────────────────────────────────────┘${NC}"
+echo ""
+read -p "End-Datum   [Standard: $DEFAULT_END  |  70/30 automatisch]: " END_INPUT
+END_INPUT=$(echo "$END_INPUT" | tr -d '\r\n' | xargs)
+END_DATE="${END_INPUT:-$DEFAULT_END}"
 
 # ── Bewegungstypen ───────────────────────────────────────────────────────────
 echo ""
