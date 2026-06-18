@@ -161,8 +161,11 @@ def run_optimizer(
         counter[0] += 1
         done   = len([t for t in study.trials if t.state.name == 'COMPLETE'])
         pruned = len([t for t in study.trials if t.state.name == 'PRUNED'])
-        best   = study.best_value if study.best_trial else None
-        best_s = f"{best:+.2f}%" if best is not None else "      —"
+        try:
+            best   = study.best_value
+            best_s = f"{best:+.2f}%"
+        except ValueError:
+            best_s = "      —"
         pct    = counter[0] / n_trials * 100
         filled = int(40 * counter[0] / n_trials)
         bar    = '█' * filled + '░' * (40 - filled)
