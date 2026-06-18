@@ -329,6 +329,7 @@ def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_co
         coin, timeframe, strategy, strat_name, bias, volatility,
         avg_mag, max_mag, top_signals, move_stats, total,
         impulse_n, breakdown_n, reversal_n, squeeze_n,
+        type_scores=type_scores,
         validation_results=validation_results,
     )
 
@@ -358,116 +359,255 @@ def _generate_fazit(symbol, timeframe, move_stats, correlations, up_count, dn_co
 def _build_fazit_text(coin, timeframe, strategy, strat_name, bias, volatility,
                       avg_mag, max_mag, top_signals, move_stats, total,
                       impulse_n, breakdown_n, reversal_n, squeeze_n,
-                      validation_results=None):
-    """Generiert einen zusammenhängenden Fließtext als Fazit."""
+                      type_scores=None, validation_results=None):
+    """Generiert einen intelligenten Fließtext als Fazit."""
 
     parts = []
 
-    # Satz 1: Grundcharakter des Coins — basiert auf STRATEGY SCORING (Feature-Gewichtung),
-    # nicht auf roher Bewegungstyp-Häufigkeit, um Widersprüche im Fazit zu vermeiden.
-    impulse_pct   = int(impulse_n / total * 100)
-    breakdown_pct = int(breakdown_n / total * 100)
-    reversal_pct  = int(reversal_n / total * 100)
-    squeeze_pct   = int(squeeze_n / total * 100)
+    # ── Hilfswerte für adaptive Formulierungen ────────────────────────────────
+    impulse_pct   = int(impulse_n   / total * 100) if total else 0
+    breakdown_pct = int(breakdown_n / total * 100) if total else 0
+    reversal_pct  = int(reversal_n  / total * 100) if total else 0
+    squeeze_pct   = int(squeeze_n   / total * 100) if total else 0
 
+    # Dominanz-Stärke des Gewinners gegenüber dem Zweitplatzierten
+    winner_score = runner_score = 0
+    runner_name  = ''
+    if type_scores:
+        sorted_ts = sorted(type_scores.items(), key=lambda x: -x[1])
+        winner_score = sorted_ts[0][1]
+        runner_name, runner_score = sorted_ts[1] if len(sorted_ts) > 1 else ('—', 0)
+        dom_ratio = winner_score / runner_score if runner_score > 0 else 99
+    else:
+        dom_ratio = 2.0
+
+    if dom_ratio >= 2.5:
+        dom_word = "dominiert mit Abstand"
+        dom_adj  = "klar überlegene"
+    elif dom_ratio >= 1.7:
+        dom_word = "führt deutlich"
+        dom_adj  = "deutlich stärkere"
+    elif dom_ratio >= 1.3:
+        dom_word = "liegt vorne"
+        dom_adj  = "stärkere"
+    else:
+        dom_word = "knapp führt"
+        dom_adj  = "leicht stärkere"
+
+    score_hint = (f" (Score: <b>{winner_score:.0f}</b> vs. "
+                  f"{runner_name}: {runner_score:.0f})"
+                  if winner_score > 0 else "")
+
+    # ── Satz 1: Grundcharakter — adaptiv nach Strategy + tatsächlichen Zahlen ─
     if strategy == 'MOMENTUM':
-        parts.append(
-            f"{coin} ist ein <b>Momentum-Coin</b> — {impulse_n} von {total} Bewegungen ({impulse_pct}%) "
-            f"waren schnelle Impulse mit ⌀ {avg_mag}% Magnitude (Max {max_mag}%). "
-            f"Momentum-Features sind die stärksten Prädiktoren für zukünftige Bewegungen."
-        )
-    elif strategy == 'BREAKOUT':
         if impulse_pct >= 50:
+            # Consistent: movement type AND scoring both point to momentum
             parts.append(
-                f"{coin} ist ein <b>Breakout-Coin</b> — obwohl {impulse_pct}% der Bewegungen als Impulse "
-                f"klassifiziert werden, dominiert das Breakout-Feature-Scoring klar. "
-                f"Ausbrüche aus Konsolidierungszonen mit Volume-Bestätigung sind die statistisch "
-                f"zuverlässigsten Entry-Punkte (⌀ {avg_mag}% Magnitude, Max {max_mag}%)."
+                f"{coin} ist ein <b>Momentum-Coin</b>{score_hint} — {impulse_n} von {total} Bewegungen "
+                f"({impulse_pct}%) verliefen als schnelle Impulse. "
+                f"Momentum-Features {dom_word} das Feature-Scoring und bestätigen: "
+                f"der Markt bewegt sich in kurzen, starken Schüben (⌀ {avg_mag}%, Max {max_mag}%)."
+            )
+        else:
+            # Scoring says MOMENTUM but movement frequency disagrees — explain
+            parts.append(
+                f"{coin} zeigt ein <b>Momentum-getriebenes Profil</b>{score_hint} — "
+                f"Momentum-Features {dom_word} trotz nur {impulse_pct}% Impulsbewegungen. "
+                f"Die Bewegungen sind zwar vielfältig ({total} Typen), "
+                f"aber Momentum-Indikatoren (RSI, MACD, Velocity) sagen sie am zuverlässigsten vorher "
+                f"(⌀ {avg_mag}%, Max {max_mag}%)."
+            )
+
+    elif strategy == 'BREAKOUT':
+        if breakdown_pct >= 30:
+            # Movement type AND scoring both confirm breakout
+            parts.append(
+                f"{coin} ist ein <b>Breakout-Coin</b>{score_hint} — {breakdown_n} von {total} Bewegungen "
+                f"({breakdown_pct}%) entstanden durch Ausbrüche aus Konsolidierungszonen, "
+                f"und Struktur-Features {dom_word}. "
+                f"Der Kurs konsolidiert, baut Spannung auf und bricht dann mit ⌀ {avg_mag}% (Max {max_mag}%) aus."
+            )
+        elif impulse_pct >= 50:
+            # Many impulses, but breakout features win → the impulses ARE breakouts
+            parts.append(
+                f"{coin} ist ein <b>Breakout-Coin</b>{score_hint} — obwohl {impulse_pct}% "
+                f"der Bewegungen als Impulse klassifiziert werden, {dom_word} das Breakout-Feature-Scoring "
+                f"gegenüber Momentum ({runner_name}: {runner_score:.0f}). "
+                f"Das Muster: erst Konsolidierung → dann Ausbruch → daraus entsteht der Impuls. "
+                f"Entry vor dem Impuls (beim Ausbruch) ist statistisch besser als Entry im laufenden Impuls."
             )
         else:
             parts.append(
-                f"{coin} ist ein <b>Breakout-Coin</b> — {breakdown_n} von {total} Bewegungen ({breakdown_pct}%) "
-                f"entstanden durch Ausbrüche aus Konsolidierungszonen. "
-                f"Der Kurs konsolidiert lange und explodiert dann mit ⌀ {avg_mag}%."
+                f"{coin} ist ein <b>Breakout-Coin</b>{score_hint} — Struktur-Features "
+                f"wie <code>breakout_up/down</code>, <code>donchian_pos</code> und Volume-Bestätigung "
+                f"{dom_word} das Scoring. Ausbrüche aus Ranges sind der zuverlässigste Entry-Trigger "
+                f"(⌀ {avg_mag}% Magnitude, Max {max_mag}%)."
             )
+
     elif strategy == 'MEAN_REV':
-        parts.append(
-            f"{coin} neigt zu <b>Mean-Reversion</b> — {reversal_n} von {total} Bewegungen ({reversal_pct}%) "
-            f"waren Trendwenden, und Hurst/Varianz-Ratio-Features dominieren das Scoring. "
-            f"Extrembewegungen werden statistisch häufiger umgekehrt als fortgesetzt (⌀ {avg_mag}%)."
-        )
+        if reversal_pct >= 20:
+            parts.append(
+                f"{coin} neigt klar zu <b>Mean-Reversion</b>{score_hint} — {reversal_n} von {total} "
+                f"Bewegungen ({reversal_pct}%) waren Trendwenden, und Hurst/Variance-Ratio-Features "
+                f"{dom_word}. Extrembewegungen (⌀ {avg_mag}%) werden statistisch öfter umgekehrt "
+                f"als fortgesetzt."
+            )
+        else:
+            parts.append(
+                f"{coin} zeigt ein <b>Mean-Reversion-Profil</b>{score_hint} — "
+                f"Hurst-Exponent und Varianz-Ratio {dom_word}, auch wenn nur {reversal_pct}% "
+                f"der Bewegungen klassische Trendwenden sind. "
+                f"Der Markt kehrt nach Extrembewegungen (Max {max_mag}%) statistisch zuverlässig zurück."
+            )
+
     elif strategy == 'SQUEEZE':
         parts.append(
-            f"{coin} zeigt ausgeprägte <b>Squeeze-Release-Muster</b> — {squeeze_n} von {total} Bewegungen "
-            f"({squeeze_pct}%) entstanden durch Volatilitätskompression gefolgt von explosiven Ausbrüchen "
-            f"(⌀ {avg_mag}%, Max {max_mag}%). Ideal für Volatilitäts-basierte Strategien."
+            f"{coin} ist ein <b>Squeeze-Coin</b>{score_hint} — {squeeze_n} von {total} Bewegungen "
+            f"({squeeze_pct}%) entstanden durch Volatilitätskompression gefolgt von explosiven Ausbrüchen. "
+            f"Bollinger-Band- und Entropy-Features {dom_word} (⌀ {avg_mag}%, Max {max_mag}%). "
+            f"Der optimale Entry liegt im Squeeze, nicht nach dem Ausbruch."
         )
+
     elif strategy == 'ORDERFLOW':
+        top_of_feats = [s['feature'] for s in top_signals if s.get('cat') == 'ORDERFLOW'][:2]
+        feat_str = ' + '.join(f"<code>{f}</code>" for f in top_of_feats) if top_of_feats else "<code>CVD</code>"
         parts.append(
-            f"{coin} wird von <b>Order-Flow</b> dominiert — CVD- und Volumen-Features "
-            f"sind die stärksten Prädiktoren. Institutioneller Kaufdruck ist hier messbar und handelsrelevant "
-            f"(⌀ {avg_mag}% Magnitude über {total} Bewegungen)."
+            f"{coin} wird von <b>Order-Flow</b> dominiert{score_hint} — "
+            f"Volume- und CVD-Features {dom_word} (stärkste Prädiktoren: {feat_str}). "
+            f"Institutioneller Kauf- oder Verkaufsdruck ist hier deutlich messbar und "
+            f"kündigt Bewegungen (⌀ {avg_mag}%) frühzeitig an."
         )
+
     elif strategy == 'COMPLEXITY':
         parts.append(
-            f"{coin} zeigt ein <b>Regime-geprägtes Profil</b> — Entropy- und Hurst-Features "
-            f"dominieren das Scoring. Der Markt wechselt zwischen Trend- und Konsolidierungsphasen; "
-            f"ein Regime-Filter ist hier unverzichtbar (⌀ {avg_mag}% Magnitude)."
-        )
-    else:
-        parts.append(
-            f"{coin} zeigt ein <b>gemischtes Bewegungsprofil</b> mit {total} Bewegungen über den Analysezeitraum "
-            f"(⌀ {avg_mag}%, Max {max_mag}%). Kein dominantes Strategie-Muster erkennbar."
+            f"{coin} zeigt ein <b>Regime-geprägtes Profil</b>{score_hint} — "
+            f"Entropy- und Hurst-Features {dom_word}. "
+            f"Der Markt wechselt zwischen klar trendenden (Hurst > 0.5) und mean-revertierenden "
+            f"Phasen (Hurst < 0.45) — ein Regime-Filter ist hier unverzichtbar, "
+            f"um nicht im falschen Marktmodus zu handeln (⌀ {avg_mag}%, Max {max_mag}%)."
         )
 
-    # Satz 2: Richtungs-Bias
-    if bias == 'LONG':
+    else:  # HYBRID
+        sorted_ts2 = sorted(type_scores.items(), key=lambda x: -x[1])[:3] if type_scores else []
+        top3_str = ', '.join(f"{k} ({v:.0f})" for k, v in sorted_ts2)
         parts.append(
-            f"Im analysierten Zeitraum gab es einen klaren <b>Long-Bias</b> — "
-            f"Aufwärtsbewegungen überwiegen, was auf ein bullisches Marktumfeld hindeutet."
+            f"{coin} zeigt ein <b>gemischtes Profil</b> — kein Strategie-Typ dominiert klar "
+            f"(Top-3: {top3_str}). "
+            f"Über {total} Bewegungen (⌀ {avg_mag}%, Max {max_mag}%) sind verschiedene Muster "
+            f"gleichmäßig vertreten. Ein Multi-Signal-Ansatz ist hier am robustesten."
+        )
+
+    # ── Satz 2: Richtungs-Bias — adaptiv mit konkreten Zahlen ─────────────────
+    up_n  = sum(s.get('n', 0) for k, s in move_stats.items() if 'UP' in k or 'BREAKOUT_UP' in k)
+    dn_n  = sum(s.get('n', 0) for k, s in move_stats.items() if 'DOWN' in k or 'BREAKDOWN' in k)
+    if bias == 'LONG':
+        long_excess = round((up_n / dn_n - 1) * 100) if dn_n else 100
+        parts.append(
+            f"Der Markt zeigte in diesem Zeitraum einen klaren <b>Long-Bias</b> — "
+            f"Aufwärts- vs. Abwärtsbewegungen: {up_n} vs. {dn_n} ({long_excess}% mehr Long). "
+            f"Short-Setups waren statistisch schwächer; der Großteil der Profite entstand auf der Long-Seite."
         )
     elif bias == 'SHORT':
+        short_excess = round((dn_n / up_n - 1) * 100) if up_n else 100
         parts.append(
-            f"Im analysierten Zeitraum dominierte ein <b>Short-Bias</b> — "
-            f"der Markt tendierte abwärts. Short-Positionen waren statistisch häufiger profitabel."
+            f"Der Markt tendierte in diesem Zeitraum klar abwärts — <b>Short-Bias</b>: "
+            f"{dn_n} Abwärts- vs. {up_n} Aufwärtsbewegungen ({short_excess}% mehr Short). "
+            f"Long-Setups liefen gegen den Trend; Short-Strategien hatten statistisch die Oberhand."
         )
     else:
         parts.append(
-            f"Die Bewegungsrichtungen sind <b>ausgewogen</b> — kein statistischer Long- oder Short-Vorteil "
-            f"im Gesamtzeitraum erkennbar. Beide Richtungen sind gleich handelbar."
+            f"Die Richtungsverteilung ist <b>ausgewogen</b> — {up_n} Aufwärts- vs. {dn_n} "
+            f"Abwärtsbewegungen, kein statistischer Long- oder Short-Vorteil erkennbar. "
+            f"Beide Seiten sind gleich handelbar."
         )
 
-    # Satz 3: Beste Entry-Signale
-    best_by_hit = sorted(top_signals, key=lambda s: -s['hit'])[:3] if top_signals else []
+    # ── Satz 3: Beste Entry-Signale — konkret und differenziert ───────────────
+    best_by_hit = sorted(top_signals, key=lambda s: -(s['hit'] * abs(s['t'])))[:3] if top_signals else []
     if best_by_hit:
-        signal_names = ' + '.join(f"<code>{s['feature']}</code>" for s in best_by_hit)
+        signal_parts = []
+        for s in best_by_hit:
+            direction_word = "erhöht" if s['t'] > 0 else "erniedrigt"
+            signal_parts.append(
+                f"<code>{s['feature']}</code> {direction_word} (Hit-Rate {s['hit']:.0f}%, "
+                f"t={s['t']:+.1f})"
+            )
+        signals_str = ' + '.join(signal_parts)
         avg_hit = round(sum(s['hit'] for s in best_by_hit) / len(best_by_hit))
         parts.append(
-            f"Die zuverlässigsten Entry-Signale sind {signal_names} "
-            f"mit einer durchschnittlichen Hit-Rate von <b>{avg_hit}%</b>. "
-            f"Diese Kombination war in {avg_hit}% aller analysierten Bewegungen im Vorfeld erhöht bzw. erniedrigt."
+            f"Die statistisch stärksten Entry-Signale: {signals_str}. "
+            f"Im Schnitt war diese Kombination in <b>{avg_hit}%</b> aller analysierten "
+            f"Bewegungen im Vorfeld aktiv."
         )
 
-    # Satz 4: Konkrete Strategie-Empfehlung
+    # ── Satz 4: Konkrete Strategie-Empfehlung — signal-spezifisch ─────────────
     if strategy == 'MOMENTUM':
-        entry_signals = [s['feature'] for s in best_by_hit if s['cat'] == 'MOMENTUM'][:3]
+        entry_signals = [s['feature'] for s in best_by_hit if s.get('cat') == 'MOMENTUM'][:2]
+        anti_signals  = [s['feature'] for s in best_by_hit if s.get('cat') == 'BREAKOUT'][:1]
         if entry_signals:
             sig_str = ' + '.join(f"<code>{f}</code>" for f in entry_signals)
+            avoid = (f" Breakout-Features wie <code>{anti_signals[0]}</code> "
+                     f"sind hier schwächer als Momentum-Indikatoren."
+                     if anti_signals else "")
             parts.append(
                 f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
-                f"Momentum-Strategie — Entry wenn {sig_str} gleichzeitig in Trendrichtung zeigen. "
-                f"Mean-Reversion-Ansätze sind statistisch unterlegen."
+                f"Momentum-Strategie — Entry wenn {sig_str} gleichzeitig in Trendrichtung zeigen.{avoid}"
             )
         else:
             parts.append(
-                f"<b>Empfehlung:</b> Momentum-Strategie — Entry nur wenn mehrere Momentum-Indikatoren "
-                f"gleichzeitig in Trendrichtung zeigen. Nicht gegen den laufenden Impuls handeln."
+                f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+                f"Momentum-Strategie — mehrere Momentum-Indikatoren gleichzeitig bestätigen lassen; "
+                f"nicht gegen laufenden Impuls handeln."
             )
+
     elif strategy == 'BREAKOUT':
+        vol_signal = next((s['feature'] for s in best_by_hit if 'vol' in s['feature'] or 'obv' in s['feature']), None)
+        vol_hint = (f" <code>{vol_signal}</code> als Volume-Bestätigung nutzen."
+                    if vol_signal else " <code>volume_z</code> > 1.0 als Pflicht-Filter.")
         parts.append(
             f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
-            f"Breakout-Strategie — Entry beim Ausbruch aus Konsolidierung mit Volume-Bestätigung. "
-            f"SL knapp unter dem Ausbruchsniveau, TP basierend auf der vorherigen Range-Größe."
+            f"Breakout-Strategie — auf Konsolidierung warten, dann Entry beim bestätigten Ausbruch.{vol_hint} "
+            f"SL knapp unter dem Ausbruchniveau, TP aus vorheriger Range-Größe ableiten."
+        )
+
+    elif strategy == 'MEAN_REV':
+        hurst_feat = next((s['feature'] for s in best_by_hit if 'hurst' in s['feature']), None)
+        hurst_hint = (f" <code>{hurst_feat}</code> < 0.45 als Pflicht-Filter vor jedem Entry."
+                      if hurst_feat else " Hurst-Exponent < 0.45 als Pflicht-Filter.")
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Mean-Reversion-Strategie — antizyklischer Entry bei RSI-Extremwerten "
+            f"(< 25 Long / > 75 Short).{hurst_hint} "
+            f"Vorsicht: in starken Trends (ADX > 25) versagt Mean-Reversion."
+        )
+
+    elif strategy == 'SQUEEZE':
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Squeeze-Release-Strategie — auf BB-Kompression (<code>bb_width</code> auf Tiefstand) "
+            f"warten, dann Entry beim ersten Volume-bestätigten Ausbruch. "
+            f"<code>entropy_squeeze</code> = 1 signalisiert aufgebaute Spannung."
+        )
+
+    elif strategy == 'ORDERFLOW':
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Order-Flow-Strategie — CVD-Divergenz als primäres Signal "
+            f"(Preis steigt, CVD fällt → Short-Setup). "
+            f"<code>cum_pressure_slope</code> > 0 für Long, < 0 für Short als Filter."
+        )
+
+    elif strategy == 'COMPLEXITY':
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Regime-basierte Strategie — nur handeln wenn Hurst > 0.5 (Trend-Regime) "
+            f"oder < 0.45 (Mean-Rev-Regime). Entropy-Anstieg = Chaos kommt → Position reduzieren."
+        )
+
+    else:  # HYBRID
+        parts.append(
+            f"<b>Empfehlung für einen neuen Bot auf {coin}:</b> "
+            f"Multi-Signal-Ansatz — mindestens 3 Bestätigungen aus verschiedenen Kategorien "
+            f"(Momentum, Volume, Struktur) kombinieren. Kein Einzel-Signal reicht hier aus."
         )
     elif strategy == 'MEAN_REV':
         parts.append(
