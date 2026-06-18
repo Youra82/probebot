@@ -363,37 +363,61 @@ def _build_fazit_text(coin, timeframe, strategy, strat_name, bias, volatility,
 
     parts = []
 
-    # Satz 1: Grundcharakter des Coins
-    dom_type = max(move_stats, key=lambda k: move_stats[k]['n']) if move_stats else '?'
-    dom_n    = move_stats.get(dom_type, {}).get('n', 0)
-    dom_pct  = round(dom_n / total * 100) if total else 0
+    # Satz 1: Grundcharakter des Coins — basiert auf STRATEGY SCORING (Feature-Gewichtung),
+    # nicht auf roher Bewegungstyp-Häufigkeit, um Widersprüche im Fazit zu vermeiden.
+    impulse_pct   = int(impulse_n / total * 100)
+    breakdown_pct = int(breakdown_n / total * 100)
+    reversal_pct  = int(reversal_n / total * 100)
+    squeeze_pct   = int(squeeze_n / total * 100)
 
-    if impulse_n / total > 0.5:
+    if strategy == 'MOMENTUM':
         parts.append(
-            f"{coin} ist ein <b>Momentum-Coin</b> — {impulse_n} von {total} Bewegungen ({int(impulse_n/total*100)}%) "
-            f"waren schnelle Impulse mit durchschnittlich {avg_mag}% Magnitude (Max {max_mag}%). "
-            f"Der Markt bewegt sich in starken, kurzen Schüben statt in langsamen Trends."
+            f"{coin} ist ein <b>Momentum-Coin</b> — {impulse_n} von {total} Bewegungen ({impulse_pct}%) "
+            f"waren schnelle Impulse mit ⌀ {avg_mag}% Magnitude (Max {max_mag}%). "
+            f"Momentum-Features sind die stärksten Prädiktoren für zukünftige Bewegungen."
         )
-    elif breakdown_n / total > 0.4:
+    elif strategy == 'BREAKOUT':
+        if impulse_pct >= 50:
+            parts.append(
+                f"{coin} ist ein <b>Breakout-Coin</b> — obwohl {impulse_pct}% der Bewegungen als Impulse "
+                f"klassifiziert werden, dominiert das Breakout-Feature-Scoring klar. "
+                f"Ausbrüche aus Konsolidierungszonen mit Volume-Bestätigung sind die statistisch "
+                f"zuverlässigsten Entry-Punkte (⌀ {avg_mag}% Magnitude, Max {max_mag}%)."
+            )
+        else:
+            parts.append(
+                f"{coin} ist ein <b>Breakout-Coin</b> — {breakdown_n} von {total} Bewegungen ({breakdown_pct}%) "
+                f"entstanden durch Ausbrüche aus Konsolidierungszonen. "
+                f"Der Kurs konsolidiert lange und explodiert dann mit ⌀ {avg_mag}%."
+            )
+    elif strategy == 'MEAN_REV':
         parts.append(
-            f"{coin} zeigt ein <b>Breakout-Muster</b> — {breakdown_n} von {total} Bewegungen ({int(breakdown_n/total*100)}%) "
-            f"entstanden durch Ausbrüche aus Konsolidierungszonen. "
-            f"Der Kurs konsolidiert lange und explodiert dann mit ⌀ {avg_mag}%."
+            f"{coin} neigt zu <b>Mean-Reversion</b> — {reversal_n} von {total} Bewegungen ({reversal_pct}%) "
+            f"waren Trendwenden, und Hurst/Varianz-Ratio-Features dominieren das Scoring. "
+            f"Extrembewegungen werden statistisch häufiger umgekehrt als fortgesetzt (⌀ {avg_mag}%)."
         )
-    elif reversal_n / total > 0.2:
+    elif strategy == 'SQUEEZE':
         parts.append(
-            f"{coin} neigt zu <b>Mean-Reversion</b> — {reversal_n} Trendwenden in {total} analysierten Bewegungen. "
-            f"Extrembewegungen werden statistisch häufiger umgekehrt als fortgesetzt."
+            f"{coin} zeigt ausgeprägte <b>Squeeze-Release-Muster</b> — {squeeze_n} von {total} Bewegungen "
+            f"({squeeze_pct}%) entstanden durch Volatilitätskompression gefolgt von explosiven Ausbrüchen "
+            f"(⌀ {avg_mag}%, Max {max_mag}%). Ideal für Volatilitäts-basierte Strategien."
         )
-    elif squeeze_n / total > 0.1:
+    elif strategy == 'ORDERFLOW':
         parts.append(
-            f"{coin} zeigt ausgeprägte <b>Squeeze-Release-Muster</b> — Volatilitätskompression "
-            f"gefolgt von explosiven Ausbrüchen. Ideal für Volatilitäts-basierte Strategien."
+            f"{coin} wird von <b>Order-Flow</b> dominiert — CVD- und Volumen-Features "
+            f"sind die stärksten Prädiktoren. Institutioneller Kaufdruck ist hier messbar und handelsrelevant "
+            f"(⌀ {avg_mag}% Magnitude über {total} Bewegungen)."
+        )
+    elif strategy == 'COMPLEXITY':
+        parts.append(
+            f"{coin} zeigt ein <b>Regime-geprägtes Profil</b> — Entropy- und Hurst-Features "
+            f"dominieren das Scoring. Der Markt wechselt zwischen Trend- und Konsolidierungsphasen; "
+            f"ein Regime-Filter ist hier unverzichtbar (⌀ {avg_mag}% Magnitude)."
         )
     else:
         parts.append(
             f"{coin} zeigt ein <b>gemischtes Bewegungsprofil</b> mit {total} Bewegungen über den Analysezeitraum "
-            f"(⌀ {avg_mag}%, Max {max_mag}%). Kein dominanter Bewegungstyp erkennbar."
+            f"(⌀ {avg_mag}%, Max {max_mag}%). Kein dominantes Strategie-Muster erkennbar."
         )
 
     # Satz 2: Richtungs-Bias
