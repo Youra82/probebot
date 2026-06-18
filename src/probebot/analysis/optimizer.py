@@ -177,13 +177,14 @@ def run_optimizer(
 
     print(f"  [{' ' * 40}]   0.0%     0/{n_trials}  Best:      —  ✓0  ✗0   ",
           end='', flush=True)
+    interrupted = False
     try:
         study.optimize(objective, n_trials=n_trials)
     except KeyboardInterrupt:
-        pass
+        interrupted = True
     print()  # Zeilenumbruch nach fertigem Balken
-    if not (study.best_trial is None):
-        print(f"  Abgebrochen — verwende bestes bisheriges Ergebnis")
+    if interrupted:
+        print(f"  Ctrl+C — verwende bestes bisheriges Ergebnis ({counter[0]} Trials)")
 
     completed = [t for t in study.trials if t.state.name == 'COMPLETE']
     if not completed:
