@@ -350,86 +350,100 @@ def _write_portfolio_to_settings(results: List[Dict]):
     print(f"  {G}settings.json aktualisiert — {len(active)} aktive Strategien.{NC}")
 
 
-# ─── Mode 4: Equity Chart ────────────────────────────────────────────────────
+# ─── Mode 4: Interaktiver Plotly Chart ───────────────────────────────────────
 
 def mode_4_charts():
-    """Generate equity curve charts for OOS results."""
+    """Interaktiver Plotly Chart (Candlestick + Trade-Marker + Equity) für OOS-Daten."""
     try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
+        import plotly
     except ImportError:
-        print(f"  {R}matplotlib nicht installiert.{NC}")
+        print(f"  {R}plotly nicht installiert. pip install plotly{NC}")
         return
+
+    from probebot.analysis.interactive_chart import create_chart
 
     configs = _load_configs()
     if not configs:
         print(f"\n  {R}Keine Configs.{NC}")
         return
 
-    print(f"  Erstelle Equity-Charts für {len(configs)} Configs...")
+    print(f"\n{Y}  Verfügbare Configs:{NC}")
+    for i, cfg in enumerate(configs, 1):
+        sym   = cfg['market']['symbol'].split('/')[0]
+        tf    = cfg['market']['timeframe']
+        strat = cfg.get('strategy', {}).get('type', '?')
+        pnl   = cfg.get('_meta', {}).get('insample_pnl_pct', 0)
+        print(f"  {i:2d}) {sym:<6} {tf:<4}  {strat:<10}  In-Sample: {pnl:+.1f}%")
+
+    raw = input(f"\n  Welche Config(s) als Chart? (Nummern kommagetrennt) [Standard: alle]: ").strip()
+
+    if raw:
+        chosen_idxs = []
+        for s in raw.replace(',', ' ').split():
+            try:
+                idx = int(s.strip()) - 1
+                if 0 <= idx < len(configs):
+                    chosen_idxs.append(idx)
+            except ValueError:
+                pass
+        chosen = [configs[i] for i in chosen_idxs]
+    else:
+        chosen = configs
+
+    if not chosen:
+        print(f"  {R}Ungültige Auswahl.{NC}")
+        return
+
     charts_dir = ROOT / 'artifacts' / 'charts'
     charts_dir.mkdir(parents=True, exist_ok=True)
+    generated  = []
 
-    fig, axes = plt.subplots(len(configs), 1,
-                             figsize=(14, 4 * max(len(configs), 1)),
-                             facecolor='#0d1117')
+    for cfg in chosen:
+        sym  = cfg['market']['symbol']
+        tf   = cfg['market']['timeframe']
+        name = f"{sym.split('/')[0]} {tf}"
+        print(f"\n  Berechne OOS-Backtest: {name}...")
 
-    if len(configs) == 1:
-        axes = [axes]
-
-    saved = []
-    for ax, cfg in zip(axes, configs):
         res = _run_oos_backtest(cfg)
-        sym = cfg['market']['symbol'].split('/')[0]
-        tf  = cfg['market']['timeframe']
-        ax.set_facecolor('#0d1117')
-        ax.tick_params(colors='#8b949e')
-        for spine in ax.spines.values():
-            spine.set_color('#30363d')
+        if res is None or not res.get('trades'):
+            print(f"  {R}{name}: Keine OOS-Trades.{NC}")
+            continue
 
-        if res and res['trades']:
-            capitals = [cfg.get('risk', {}).get('start_capital', 100)]
-            dates    = [res['trades'][0]['entry_ts'][:10]]
-            for t in res['trades']:
-                capitals.append(t['capital_after'])
-                dates.append(t['close_ts'][:10])
+        df_oos, _ = _load_oos_data(cfg)
+        if df_oos is None:
+            continue
 
-            color = '#26a69a' if capitals[-1] >= capitals[0] else '#ef5350'
-            ax.plot(range(len(capitals)), capitals, color=color, linewidth=1.5)
-            ax.fill_between(range(len(capitals)), capitals,
-                            capitals[0], alpha=0.15, color=color)
-            pnl_pct = res['pnl_pct']
-            ax.set_title(
-                f"{sym} {tf}  OOS PnL: {pnl_pct:+.1f}%  "
-                f"({res['n_trades']} Trades, WR:{res['win_rate']:.0f}%, DD:{res['max_drawdown']:.1f}%)",
-                color='#e6edf3', fontsize=10,
-            )
-        else:
-            ax.set_title(f"{sym} {tf}  — Keine OOS-Trades", color='#8b949e', fontsize=10)
-        ax.grid(True, color='#21262d', linewidth=0.5)
+        start_cap = cfg.get('risk', {}).get('start_capital', 100.0)
+        print(f"  {G}{res['n_trades']} Trades | WR:{res['win_rate']:.1f}% | "
+              f"PnL:{res['pnl_pct']:+.1f}% | DD:{res['max_drawdown']:.1f}%{NC}")
+        print(f"  Erstelle Chart...")
 
-    plt.tight_layout(pad=2.0)
-    out = charts_dir / 'oos_equity_curves.png'
-    plt.savefig(str(out), dpi=150, bbox_inches='tight',
-                facecolor='#0d1117', edgecolor='none')
-    plt.close()
-    print(f"  {G}Chart gespeichert: {out}{NC}")
-    saved.append(str(out))
+        fig = create_chart(sym, tf, df_oos, res['trades'], res, start_cap)
+        if fig is None:
+            continue
+
+        safe = f"{sym.replace('/', '').replace(':', '')}_{tf}"
+        out  = charts_dir / f'probebot_{safe}.html'
+        fig.write_html(str(out))
+        print(f"  {G}Chart gespeichert: {out}{NC}")
+        generated.append(str(out))
+
+    if generated:
+        print(f"\n  {G}{len(generated)} Chart(s) generiert.{NC}")
 
     # Telegram
     try:
-        from probebot.utils.telegram import load_telegram_config, send_photo
+        from probebot.utils.telegram import load_telegram_config, send_document
         secret_path = ROOT.parent / 'secret.json'
         if not secret_path.exists():
             secret_path = ROOT / 'secret.json'
         tg = load_telegram_config(str(secret_path))
-        if tg.get('bot_token'):
+        if tg.get('bot_token') and generated:
             inp = input("  Per Telegram senden? (j/n): ").strip().lower()
             if inp in ('j', 'y', 'ja'):
-                send_photo(tg['bot_token'], tg['chat_id'], saved[0],
-                           f"📊 Probebot OOS Equity Curves\n{len(configs)} Strategien")
+                for path in generated:
+                    send_document(tg['bot_token'], tg['chat_id'], path,
+                                  caption=f"Probebot Chart: {Path(path).stem}")
                 print(f"  {G}Telegram gesendet.{NC}")
     except Exception:
         pass
