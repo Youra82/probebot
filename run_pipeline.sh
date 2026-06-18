@@ -40,7 +40,6 @@ expand_symbol() {
     fi
 }
 
-# Mehrere Symbole → Array
 SYMBOLS=()
 if [[ -z "$SYMBOL_INPUT" ]]; then
     SYMBOLS=("$DEFAULT_SYMBOL")
@@ -49,49 +48,82 @@ else
         SYMBOLS+=("$(expand_symbol "$s")")
     done
 fi
-
 echo -e "${GREEN}  Symbole: ${SYMBOLS[*]}${NC}"
 
-# ── Timeframe ────────────────────────────────────────────────────────────────
+# ── Timeframe(s) ──────────────────────────────────────────────────────────────
 DEFAULT_TF=$(python3 -c "import json; print(json.load(open('settings.json')).get('primary_timeframe','1d'))" 2>/dev/null || echo "1d")
 echo ""
-echo -e "${YELLOW}Primaerer Timeframe (Basis fuer Bewegungserkennung):${NC}"
+echo -e "${YELLOW}Timeframe(s) — Leerzeichen = mehrere:${NC}"
 echo -e "  ${GREEN}1d${NC}   — ab 2021 (4.5J), ~365 Kerzen/Jahr   — 1 Luecke ~2 Tage bekannt"
 echo -e "  ${GREEN}4h${NC}   — ab 2021 (4.5J), ~2200 Kerzen/Jahr  — lueckenlos"
 echo -e "  ${GREEN}1h${NC}   — ab 2021 (4.4J), ~8800 Kerzen/Jahr  — lueckenlos"
 echo -e "  ${GREEN}15m${NC}  — ab 2023 (2.5J), ~35000 Kerzen/Jahr — lueckenlos"
 echo -e "  ${YELLOW}5m${NC}   — ab 2024 (1.5J), ~105000 Kerzen/Jahr"
 echo -e "  ${YELLOW}1m${NC}   — ab 2025 (~6 Mon), ~525000 Kerzen/Jahr"
-read -p "Timeframe [Standard: $DEFAULT_TF]: " TF_INPUT
-TF_INPUT="${TF_INPUT//[$'\r\n ']/}"
-TIMEFRAME="${TF_INPUT:-$DEFAULT_TF}"
+echo -e "${CYAN}  Beispiele: 1h | 4h 1h | 1d 4h 1h 15m${NC}"
+read -p "Timeframe(s) [Standard: $DEFAULT_TF]: " TF_INPUT
+TF_INPUT=$(echo "$TF_INPUT" | tr -d '\r\n' | xargs)
+
+TIMEFRAMES=()
+if [[ -z "$TF_INPUT" ]]; then
+    TIMEFRAMES=("$DEFAULT_TF")
+else
+    for t in $TF_INPUT; do
+        TIMEFRAMES+=("$t")
+    done
+fi
+echo -e "${GREEN}  Timeframes: ${TIMEFRAMES[*]}${NC}"
+
+# ── Adaptive Start-Datum je Timeframe ─────────────────────────────────────────
+# Gibt das optimale Start-Datum fuer einen Timeframe zurueck
+tf_default_start() {
+    local tf="$1"
+    case "$tf" in
+        1w|3d|1d|12h|6h|4h|2h|1h) echo "2021-01-01" ;;
+        30m|15m)                    echo "2023-01-01" ;;
+        5m|3m)                      echo "2024-01-01" ;;
+        1m)                         echo "2025-01-01" ;;
+        *)  python3 -c "import json; print(json.load(open('settings.json')).get('start_date','2021-01-01'))" 2>/dev/null || echo "2021-01-01" ;;
+    esac
+}
 
 # ── Zeitraum ─────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${YELLOW}Historischer Zeitraum:${NC}"
-echo "  Empfehlung:"
-printf "  %-6s  %s\n" "1d:"  "2021-01-01 → heute  (4.5 Jahre, ~1620 Kerzen)"
-printf "  %-6s  %s\n" "4h:"  "2021-01-01 → heute  (4.5 Jahre, ~9800 Kerzen)"
-printf "  %-6s  %s\n" "1h:"  "2021-01-01 → heute  (4.4 Jahre, ~35000 Kerzen)"
-printf "  %-6s  %s\n" "15m:" "2023-01-01 → heute  (2.5 Jahre, ~86000 Kerzen)"
-printf "  %-6s  %s\n" "5m:"  "2024-01-01 → heute  (1.5 Jahre, ~153000 Kerzen)"
+echo -e "  ${CYAN}Automatische Defaults je Timeframe:${NC}"
+for tf in "${TIMEFRAMES[@]}"; do
+    printf "  ${GREEN}%-6s${NC}  Start: ${GREEN}%s${NC}\n" "$tf" "$(tf_default_start $tf)"
+done
+echo ""
+echo "  Enter = automatisch je Timeframe (empfohlen)"
+echo "  Datum eingeben = gilt fuer alle Timeframes"
+echo ""
 
-# Start-Default ist timeframe-adaptiv (Bitget limitiert historische Daten je TF)
-case "$TIMEFRAME" in
-    1w|3d|1d) DEFAULT_START="2021-01-01" ;;
-    12h|6h|4h|2h|1h) DEFAULT_START="2021-01-01" ;;
-    30m|15m) DEFAULT_START="2023-01-01" ;;
-    5m|3m) DEFAULT_START="2024-01-01" ;;
-    1m) DEFAULT_START="2025-01-01" ;;
-    *) DEFAULT_START=$(python3 -c "import json; print(json.load(open('settings.json')).get('start_date','2022-01-01'))" 2>/dev/null || echo "2022-01-01") ;;
-esac
 DEFAULT_END=$(date +%Y-%m-%d)
-read -p "Start-Datum [Standard: $DEFAULT_START]: " START_INPUT
+
+# Bestimme einen sinnvollen Default-Hinweis fuer die Prompt-Klammer:
+# Bei einem einzelnen TF → dessen Datum; bei mehreren → den fruehesten (liberalsten)
+if [ "${#TIMEFRAMES[@]}" -eq 1 ]; then
+    PROMPT_START_HINT="$(tf_default_start ${TIMEFRAMES[0]})"
+else
+    # Fruehesten Default nehmen (liberalster Wert = deckt alle ab)
+    EARLIEST="2025-12-31"
+    for tf in "${TIMEFRAMES[@]}"; do
+        d="$(tf_default_start $tf)"
+        if [[ "$d" < "$EARLIEST" ]]; then
+            EARLIEST="$d"
+        fi
+    done
+    PROMPT_START_HINT="$EARLIEST (auto je TF)"
+fi
+
+read -p "Start-Datum [Standard: $PROMPT_START_HINT]: " START_INPUT
 read -p "End-Datum   [Standard: $DEFAULT_END]:   " END_INPUT
-START_INPUT="${START_INPUT//[$'\r\n ']/}"
-END_INPUT="${END_INPUT//[$'\r\n ']/}"
-START_DATE="${START_INPUT:-$DEFAULT_START}"
+START_INPUT=$(echo "$START_INPUT" | tr -d '\r\n' | xargs)
+END_INPUT=$(echo "$END_INPUT"   | tr -d '\r\n' | xargs)
 END_DATE="${END_INPUT:-$DEFAULT_END}"
+# Leere Eingabe = per-TF-Auto im Haupt-Loop; Datum = gilt fuer alle TFs
+MANUAL_START="$START_INPUT"
 
 # ── Bewegungstypen ───────────────────────────────────────────────────────────
 echo ""
@@ -103,9 +135,7 @@ echo "  SQUEEZE_RELEASE_DOWN, SQUEEZE_RELEASE_UP"
 echo "  ACCELERATION_DOWN, ACCELERATION_UP"
 echo "  GAP_DOWN, GAP_UP"
 read -p "Typen (kommagetrennt, leer = alle): " TYPES_INPUT
-TYPES_INPUT="${TYPES_INPUT//[$'\r\n ']/}"
-
-# min_move_pct wird automatisch kalibriert (300 Events/Jahr Ziel) — kein manueller Input nötig
+TYPES_INPUT=$(echo "$TYPES_INPUT" | tr -d '\r\n' | xargs)
 
 # ── Drill-Down ───────────────────────────────────────────────────────────────
 echo ""
@@ -118,7 +148,6 @@ else
     DD_FLAG="--no_drill_down"
 fi
 
-# ── Top-N Events fuer Drill-Down ─────────────────────────────────────────────
 if [[ "$DD_FLAG" == "--drill_down" ]]; then
     DEFAULT_TOPN=$(python3 -c "import json; print(json.load(open('settings.json')).get('report_top_n',5))" 2>/dev/null || echo "5")
     read -p "Wie viele Events fuer Drill-Down? [Standard: $DEFAULT_TOPN]: " TOPN_INPUT
@@ -130,7 +159,7 @@ fi
 
 # ── DB leeren? ───────────────────────────────────────────────────────────────
 echo ""
-read -p "Bestehende DB-Eintraege fuer dieses Symbol/TF loeschen? (j/n) [Standard: n]: " CLEAR_INPUT
+read -p "Bestehende DB-Eintraege loeschen? (j/n) [Standard: n]: " CLEAR_INPUT
 CLEAR_INPUT="${CLEAR_INPUT//[$'\r\n ']/}"
 if [[ "$CLEAR_INPUT" =~ ^[jJyY] ]]; then
     CLEAR_FLAG="--clear"
@@ -154,8 +183,16 @@ echo ""
 echo -e "${BLUE}=======================================================${NC}"
 echo -e "  ${CYAN}Konfiguration:${NC}"
 echo -e "  Symbol(e):   ${GREEN}${SYMBOLS[*]}${NC}"
-echo -e "  Timeframe:   ${GREEN}$TIMEFRAME${NC}"
-echo -e "  Zeitraum:    ${GREEN}$START_DATE → $END_DATE${NC}"
+echo -e "  Timeframe(s):${GREEN}${TIMEFRAMES[*]}${NC}"
+if [[ -n "$MANUAL_START" ]]; then
+    echo -e "  Zeitraum:    ${GREEN}$MANUAL_START → $END_DATE (alle TFs)${NC}"
+else
+    echo -e "  Zeitraum:    ${GREEN}auto je TF → $END_DATE${NC}"
+    for tf in "${TIMEFRAMES[@]}"; do
+        echo -e "               ${CYAN}$tf: $(tf_default_start $tf) → $END_DATE${NC}"
+    done
+fi
+echo -e "  Kombinationen:${GREEN}$((${#SYMBOLS[@]} * ${#TIMEFRAMES[@]})) (${#SYMBOLS[@]} Symbole × ${#TIMEFRAMES[@]} TF)${NC}"
 echo -e "  Min Move:    ${GREEN}auto (300 Events/Jahr)${NC}"
 echo -e "  Typen:       ${GREEN}${TYPES_INPUT:-alle}${NC}"
 echo -e "  Drill-Down:  ${GREEN}${DD_FLAG}${NC}  Top-N: ${GREEN}$TOP_N${NC}"
@@ -178,34 +215,51 @@ echo ""
 export PYTHONPATH="$SCRIPT_DIR/src"
 OVERALL_EXIT=0
 
-for SYMBOL in "${SYMBOLS[@]}"; do
-    echo -e "${BLUE}--- Symbol: $SYMBOL ---${NC}"
+# ── Haupt-Loop: alle TF × Symbol-Kombinationen ───────────────────────────────
+for TIMEFRAME in "${TIMEFRAMES[@]}"; do
 
-    ARGS=(
-        "--symbol"     "$SYMBOL"
-        "--timeframe"  "$TIMEFRAME"
-        "--start_date" "$START_DATE"
-        "--end_date"   "$END_DATE"
-        "--top_n"      "$TOP_N"
-        "--mode"       "full"
-        "$DD_FLAG"
-    )
-    [ -n "$TYPES_INPUT" ] && ARGS+=("--movement_types" "$TYPES_INPUT")
-    [ -n "$CLEAR_FLAG"  ] && ARGS+=("$CLEAR_FLAG")
-    [ -n "$TG_FLAG"     ] && ARGS+=("$TG_FLAG")
-
-    SYM_SAFE="${SYMBOL//[\/:]/_}"
-    LOGFILE="logs/pipeline_${SYM_SAFE}_$(date +%Y%m%d_%H%M%S).log"
-    $PYTHON -m probebot.run "${ARGS[@]}" 2>&1 | tee "$LOGFILE"
-
-    EXIT_CODE=${PIPESTATUS[0]}
-    if [ $EXIT_CODE -ne 0 ]; then
-        echo -e "${RED}Fehler bei $SYMBOL (Exit $EXIT_CODE). Log: $LOGFILE${NC}"
-        OVERALL_EXIT=$EXIT_CODE
+    # Start-Datum: manuell oder automatisch je TF
+    if [[ -n "$MANUAL_START" ]]; then
+        START_DATE="$MANUAL_START"
     else
-        echo -e "${GREEN}$SYMBOL abgeschlossen.${NC}"
+        START_DATE="$(tf_default_start $TIMEFRAME)"
     fi
+
+    echo -e "${BLUE}=======================================================${NC}"
+    echo -e "  ${CYAN}Timeframe: ${GREEN}$TIMEFRAME${NC}  ${CYAN}Zeitraum: ${GREEN}$START_DATE → $END_DATE${NC}"
+    echo -e "${BLUE}=======================================================${NC}"
     echo ""
+
+    for SYMBOL in "${SYMBOLS[@]}"; do
+        echo -e "${BLUE}--- $SYMBOL | $TIMEFRAME | $START_DATE → $END_DATE ---${NC}"
+
+        ARGS=(
+            "--symbol"     "$SYMBOL"
+            "--timeframe"  "$TIMEFRAME"
+            "--start_date" "$START_DATE"
+            "--end_date"   "$END_DATE"
+            "--top_n"      "$TOP_N"
+            "--mode"       "full"
+            "$DD_FLAG"
+        )
+        [ -n "$TYPES_INPUT" ] && ARGS+=("--movement_types" "$TYPES_INPUT")
+        [ -n "$CLEAR_FLAG"  ] && ARGS+=("$CLEAR_FLAG")
+        [ -n "$TG_FLAG"     ] && ARGS+=("$TG_FLAG")
+
+        SYM_SAFE="${SYMBOL//[\/:]/_}"
+        LOGFILE="logs/pipeline_${SYM_SAFE}_${TIMEFRAME}_$(date +%Y%m%d_%H%M%S).log"
+        mkdir -p logs
+        $PYTHON -m probebot.run "${ARGS[@]}" 2>&1 | tee "$LOGFILE"
+
+        EXIT_CODE=${PIPESTATUS[0]}
+        if [ $EXIT_CODE -ne 0 ]; then
+            echo -e "${RED}Fehler bei $SYMBOL $TIMEFRAME (Exit $EXIT_CODE). Log: $LOGFILE${NC}"
+            OVERALL_EXIT=$EXIT_CODE
+        else
+            echo -e "${GREEN}$SYMBOL $TIMEFRAME abgeschlossen.${NC}"
+        fi
+        echo ""
+    done
 done
 
 if [ $OVERALL_EXIT -ne 0 ]; then
@@ -246,7 +300,7 @@ if [[ "$OPT_INPUT" =~ ^[jJyY] ]]; then
     echo ""
     echo -e "${YELLOW}Optimizer-Modus:${NC}"
     echo "  best_profit  — maximiert PnL (nur DD-Grenze)"
-    echo "  strict       — zusätzlich Win-Rate-Minimum"
+    echo "  strict       — zusaetzlich Win-Rate-Minimum"
     read -p "Modus [Standard: best_profit]: " OPT_MODE_INPUT
     OPT_MODE_INPUT="${OPT_MODE_INPUT//[$'\r\n ']/}"
     OPT_MODE="${OPT_MODE_INPUT:-best_profit}"
@@ -266,59 +320,68 @@ if [[ "$OPT_INPUT" =~ ^[jJyY] ]]; then
     echo -e "${BLUE}=======================================================${NC}"
     echo ""
 
-    for SYMBOL in "${SYMBOLS[@]}"; do
-        SYM_SAFE="${SYMBOL//[\/:]/_}"
-        BOT_SPEC="artifacts/db/bot_spec_${SYM_SAFE}_${TIMEFRAME}.json"
-        DATA_FILE="artifacts/data/data_${SYM_SAFE}_${TIMEFRAME}.parquet"
+    # Optimizer ebenfalls ueber alle TF × Symbol-Kombinationen
+    for TIMEFRAME in "${TIMEFRAMES[@]}"; do
 
-        if [ ! -f "$BOT_SPEC" ]; then
-            echo -e "${RED}bot_spec nicht gefunden: $BOT_SPEC${NC}"
-            echo "  Erst Forensik-Analyse ausführen."
-            continue
-        fi
-        if [ ! -f "$DATA_FILE" ]; then
-            echo -e "${RED}Daten-Cache nicht gefunden: $DATA_FILE${NC}"
-            echo "  Erst Forensik-Analyse ausführen."
-            continue
-        fi
-
-        # Read split_idx from bot_spec
-        SPLIT_IDX=$(python3 -c "import json; print(json.load(open('$BOT_SPEC'))['meta']['split_idx'])" 2>/dev/null || echo "0")
-        if [ "$SPLIT_IDX" -eq 0 ]; then
-            echo -e "${RED}split_idx nicht gefunden in $BOT_SPEC — Forensik neu ausführen${NC}"
-            continue
-        fi
-
-        echo -e "${BLUE}--- Optimizer: $SYMBOL $TIMEFRAME ---${NC}"
-        $PYTHON -m probebot.analysis.optimizer \
-            --symbol    "$SYMBOL" \
-            --timeframe "$TIMEFRAME" \
-            --bot_spec  "$BOT_SPEC" \
-            --data      "$DATA_FILE" \
-            --split_idx "$SPLIT_IDX" \
-            --trials    "$TRIALS" \
-            --capital   "$CAPITAL" \
-            --max_dd    "$MAXDD" \
-            --mode      "$OPT_MODE"
-
-        OPT_EXIT=$?
-        if [ $OPT_EXIT -eq 0 ]; then
-            echo -e "${GREEN}$SYMBOL Optimizer abgeschlossen.${NC}"
+        if [[ -n "$MANUAL_START" ]]; then
+            START_DATE="$MANUAL_START"
         else
-            echo -e "${RED}Optimizer Fehler bei $SYMBOL (Exit $OPT_EXIT)${NC}"
+            START_DATE="$(tf_default_start $TIMEFRAME)"
         fi
-        echo ""
+
+        for SYMBOL in "${SYMBOLS[@]}"; do
+            SYM_SAFE="${SYMBOL//[\/:]/_}"
+            BOT_SPEC="artifacts/db/bot_spec_${SYM_SAFE}_${TIMEFRAME}.json"
+            DATA_FILE="artifacts/data/data_${SYM_SAFE}_${TIMEFRAME}.parquet"
+
+            if [ ! -f "$BOT_SPEC" ]; then
+                echo -e "${RED}bot_spec nicht gefunden: $BOT_SPEC${NC}"
+                echo "  Erst Forensik-Analyse ausfuehren."
+                continue
+            fi
+            if [ ! -f "$DATA_FILE" ]; then
+                echo -e "${RED}Daten-Cache nicht gefunden: $DATA_FILE${NC}"
+                echo "  Erst Forensik-Analyse ausfuehren."
+                continue
+            fi
+
+            SPLIT_IDX=$(python3 -c "import json; print(json.load(open('$BOT_SPEC'))['meta']['split_idx'])" 2>/dev/null || echo "0")
+            if [ "$SPLIT_IDX" -eq 0 ]; then
+                echo -e "${RED}split_idx nicht gefunden in $BOT_SPEC — Forensik neu ausfuehren${NC}"
+                continue
+            fi
+
+            echo -e "${BLUE}--- Optimizer: $SYMBOL $TIMEFRAME ---${NC}"
+            $PYTHON -m probebot.analysis.optimizer \
+                --symbol    "$SYMBOL" \
+                --timeframe "$TIMEFRAME" \
+                --bot_spec  "$BOT_SPEC" \
+                --data      "$DATA_FILE" \
+                --split_idx "$SPLIT_IDX" \
+                --trials    "$TRIALS" \
+                --capital   "$CAPITAL" \
+                --max_dd    "$MAXDD" \
+                --mode      "$OPT_MODE"
+
+            OPT_EXIT=$?
+            if [ $OPT_EXIT -eq 0 ]; then
+                echo -e "${GREEN}$SYMBOL $TIMEFRAME Optimizer abgeschlossen.${NC}"
+            else
+                echo -e "${RED}Optimizer Fehler bei $SYMBOL $TIMEFRAME (Exit $OPT_EXIT)${NC}"
+            fi
+            echo ""
+        done
     done
 
     echo -e "${GREEN}=======================================================${NC}"
     echo -e "  ${GREEN}Optimizer abgeschlossen!${NC}"
     echo ""
-    echo "  OOS-Ergebnis prüfen:   bash show_results.sh → Mode 1"
-    echo "  Portfolio optimieren:  bash show_results.sh → Mode 3"
+    echo "  OOS-Ergebnis pruefen:   bash show_results.sh -> Mode 1"
+    echo "  Portfolio optimieren:   bash show_results.sh -> Mode 3"
     echo -e "${GREEN}=======================================================${NC}"
 else
     echo ""
-    echo "  Optimizer übersprungen."
+    echo "  Optimizer uebersprungen."
     echo "  Manuell starten: python -m probebot.analysis.optimizer --help"
 fi
 
