@@ -106,7 +106,7 @@ class OutOfSampleValidator:
 
             # ── D) Degradation ──────────────────────────────────────────────────
             degradation = insample_hit - recall_pct
-            reliability = _reliability_label(recall_pct, degradation)
+            reliability = _reliability_label(recall_pct, degradation, precision_pct)
 
             # ── E) Bestes & schlechtestes Signal ───────────────────────────────
             cond_performance = []
@@ -171,17 +171,22 @@ class OutOfSampleValidator:
             return val < threshold * 1.1
 
 
-def _reliability_label(recall_pct: float, degradation: float) -> dict:
-    """Bewertet die Out-of-Sample-Zuverlässigkeit."""
-    if recall_pct >= 60 and degradation <= 10:
+def _reliability_label(recall_pct: float, degradation: float, precision_pct: float = 100.0) -> dict:
+    """
+    Bewertet die Out-of-Sample-Zuverlässigkeit — Recall, Degradation UND Precision.
+    Precision ist entscheidend: hoher Recall bei niedriger Precision heißt nur,
+    dass das Signal fast immer feuert, nicht dass es die Bewegung tatsächlich vorhersagt.
+    Schwellenwerte gemäß README (ROBUST >=50% Precision, STABIL >=35% Precision).
+    """
+    if recall_pct >= 60 and precision_pct >= 50 and degradation <= 10:
         return {'label': 'ROBUST',    'color': '#26a69a', 'icon': '✅',
                 'text': 'Signal hält Out-of-Sample — gut generalisiert'}
-    elif recall_pct >= 45 and degradation <= 20:
+    elif recall_pct >= 45 and precision_pct >= 35 and degradation <= 20:
         return {'label': 'STABIL',    'color': '#f5a623', 'icon': '🟡',
                 'text': 'Signal leicht geschwächt — noch verwendbar'}
     elif recall_pct >= 30 and degradation <= 35:
         return {'label': 'SCHWACH',   'color': '#ef8c00', 'icon': '⚠️',
-                'text': 'Deutliche Degradation — mit Vorsicht nutzen'}
+                'text': 'Deutliche Degradation oder Precision zu niedrig — mit Vorsicht nutzen'}
     else:
         return {'label': 'OVERFITTED','color': '#ef5350', 'icon': '❌',
                 'text': 'Signal bricht OOS zusammen — wahrscheinlich Overfitting'}

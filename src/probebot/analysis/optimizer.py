@@ -94,14 +94,9 @@ def run_optimizer(
             tradeable.append({'move_type': mtype, 'direction': direction})
 
     if not tradeable:
-        print("  [optimizer] Keine ROBUST/STABIL Typen — fallback auf alle mit ≥20 Events")
-        for mtype, stats in bot_spec.get('movement_statistics', {}).items():
-            if stats.get('n_events', 0) >= 20:
-                direction = 'LONG' if 'UP' in mtype else 'SHORT'
-                tradeable.append({'move_type': mtype, 'direction': direction})
-
-    if not tradeable:
-        print("  [optimizer] Keine handelbaren Bewegungstypen. Abbruch.")
+        # Kein Fallback auf ungeprüfte Event-Counts — wenn nichts OOS-validiert
+        # ist, gibt es (aktuell) keinen belastbaren Edge für dieses Symbol/TF.
+        print("  [optimizer] Keine ROBUST/STABIL Typen mit n_train>=20 — kein Edge gefunden. Abbruch.")
         return None
 
     print(f"  [optimizer] Strategie: {strategy_name}  |  "

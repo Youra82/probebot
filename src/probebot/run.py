@@ -193,7 +193,8 @@ def main():
         _years_pre = max((_actual_ts1 - _actual_ts0).total_seconds() / (365.25 * 86400), 0.1)
     except Exception:
         _years_pre = 1.0
-    _min_events_needed = int(_MIN_EVENTS_PER_YEAR * _years_pre)
+    _target_epy = _target_events_per_year(timeframe)
+    _min_events_needed = int(_target_epy * _years_pre)
     print(f"  Daten: {str(df['timestamp'].iloc[0])[:10]} → {str(df['timestamp'].iloc[-1])[:10]} "
           f"({len(df)} Kerzen, {_years_pre:.2f}J) → Ziel ≥{_min_events_needed} Events")
 
@@ -246,7 +247,8 @@ def main():
         _actual_start = str(df['timestamp'].iloc[0])[:10]
         _actual_end   = str(df['timestamp'].iloc[-1])[:10]
         min_move_pct, _median_atr, _min_total, _years, _calib = _auto_calibrate_min_move(
-            df, all_movements, start_date=_actual_start, end_date=_actual_end
+            df, all_movements, start_date=_actual_start, end_date=_actual_end,
+            events_per_year=_target_epy,
         )
         _chosen_n = next((n for t, n in _calib if t == min_move_pct), 0)
         _label = _best_calib_label(_chosen_n, _min_total)
@@ -644,14 +646,35 @@ def _run_live(
     print("\n[LIVE] Fertig.")
 
 
-_MIN_EVENTS_PER_YEAR = 300  # Mindest-Events pro Jahr für statistische Relevanz
+_MIN_EVENTS_PER_YEAR = 300  # Baseline, kalibriert an 1h (300 von ~8760 Kerzen/Jahr = 3.4%)
+
+_TF_MINUTES_FOR_TARGET = {
+    '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30,
+    '1h': 60, '2h': 120, '4h': 240, '6h': 360, '12h': 720,
+    '1d': 1440, '3d': 4320, '1w': 10080,
+}
+
+
+def _target_events_per_year(timeframe: str) -> float:
+    """
+    Skaliert das Event-Ziel proportional zur Kerzenzahl/Jahr des Timeframes.
+    _MIN_EVENTS_PER_YEAR (300) ist an 1h kalibriert (~3.4% aller Kerzen).
+    Ohne Skalierung verlangt ein fixes 300/Jahr-Ziel bei 1d (~365 Kerzen/Jahr),
+    dass 82% aller Tage "Events" sind — der Detector müsste atr_impulse bis
+    zum Boden drücken, um das zu erreichen (IMPULSE-Rauschen dominiert alles).
+    """
+    minutes = _TF_MINUTES_FOR_TARGET.get(timeframe, 60)
+    candles_per_year = (365.25 * 1440) / minutes
+    baseline_candles_per_year = (365.25 * 1440) / 60  # 1h
+    fraction = _MIN_EVENTS_PER_YEAR / baseline_candles_per_year
+    return max(20.0, candles_per_year * fraction)
 
 
 def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct',
-                              start_date='', end_date=''):
+                              start_date='', end_date='', events_per_year=None):
     """
     Findet optimalen min_move_pct für diesen Coin + Zeitraum.
-    Ziel: mindestens 300 Events pro Analysejahr.
+    Ziel: mindestens `events_per_year` Events pro Analysejahr (timeframe-skaliert).
     Sucht den höchsten Schwellwert der dieses Minimum noch erreicht,
     damit die Events so sauber/signifikant wie möglich sind.
     Wenn kein Schwellwert ausreicht, wird der niedrigste genommen.
@@ -660,6 +683,7 @@ def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct',
     from datetime import datetime
 
     median_atr = float(df[atr_col].median()) if atr_col in df.columns else 1.5
+    target_epy = events_per_year if events_per_year is not None else _MIN_EVENTS_PER_YEAR
 
     # Analysejahre berechnen
     try:
@@ -668,7 +692,7 @@ def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct',
         years = max((t1 - t0).days / 365.25, 0.25)
     except Exception:
         years = 1.0
-    min_total = int(_MIN_EVENTS_PER_YEAR * years)
+    min_total = int(target_epy * years)
 
     # ATR-Multiples + feste Ladder, dedupliziert, in [0.05, 15.0]
     atr_multiples = [round(median_atr * m, 2) for m in (0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)]

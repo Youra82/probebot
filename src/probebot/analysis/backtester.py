@@ -70,8 +70,9 @@ def run_backtest(
         sl_pct (float):             stop loss %                        [default 1.5]
         tp_rr (float):              take profit R:R ratio              [default 2.0]
         leverage (int):             futures leverage                   [default 10]
-        risk_per_trade_pct (float): % of current capital at risk       [default 1.0]
+        risk_per_trade_pct (float): % of start capital at risk (fixed, no compounding within the backtest) [default 1.0]
         max_hold_bars (int):        max bars before forced close       [default 24]
+        fee_pct_per_side (float):   taker fee % per fill (Bitget ~0.06) [default 0.06]
 
     Returns dict with: n_trades, win_rate, pnl_pct, max_drawdown,
                        sharpe, profit_factor, end_capital, trades
@@ -83,6 +84,7 @@ def run_backtest(
     tp_rr              = float(params.get('tp_rr', 2.0))
     risk_per_trade_pct = float(params.get('risk_per_trade_pct', 1.0))
     max_hold_bars      = int(params.get('max_hold_bars', 24))
+    fee_pct_per_side   = float(params.get('fee_pct_per_side', 0.06))
 
     # Pre-index entry conditions and directions
     move_conds = {
@@ -145,6 +147,7 @@ def run_backtest(
                 closed, close_reason = True, 'TIMEOUT'
 
             if closed:
+                pnl     -= open_pos['fee_cost']
                 capital += pnl
                 peak     = max(peak, capital)
                 dd       = (peak - capital) / peak * 100
@@ -185,7 +188,13 @@ def run_backtest(
 
             if best_mtype is not None:
                 direction = move_dirs[best_mtype]
-                risk_amt  = capital * risk_per_trade_pct / 100
+                # Fixe Positionsgröße (% vom Start-Kapital, nicht vom laufenden
+                # Kapital) — verhindert exponentielles Compounding im Backtest/
+                # Optimizer bei vielen Trades. Der Live-Bot compoundet echt
+                # (balance-basiert); das ist hier bewusst nur für die Metrik
+                # anders, damit pnl_pct interpretierbar bleibt und der Optimizer
+                # nicht blind auf die schnellste Explosionsrate optimiert.
+                risk_amt  = start_capital * risk_per_trade_pct / 100
                 sl_dist   = close * sl_pct / 100
 
                 if direction == 'LONG':
@@ -194,6 +203,12 @@ def run_backtest(
                 else:
                     sl = close + sl_dist
                     tp = close - sl_dist * tp_rr
+
+                # Notional aus Risiko + SL-Abstand ableiten (kein explizites
+                # Contracts-Tracking in diesem R-Multiple-Backtest), Fees
+                # (Entry + Exit) daraus vorab bestimmen.
+                notional = risk_amt / (sl_pct / 100) if sl_pct > 0 else 0.0
+                fee_cost = notional * (fee_pct_per_side / 100) * 2
 
                 open_pos = {
                     'entry_idx':   i,
@@ -204,6 +219,7 @@ def run_backtest(
                     'risk_amount': risk_amt,
                     'move_type':   best_mtype,
                     'score':       best_score,
+                    'fee_cost':    fee_cost,
                 }
 
     # Force-close any remaining position at last price
@@ -218,6 +234,7 @@ def run_backtest(
             pnl = (last_price - open_pos['entry_price']) / sl_dist * open_pos['risk_amount']
         else:
             pnl = (open_pos['entry_price'] - last_price) / sl_dist * open_pos['risk_amount']
+        pnl     -= open_pos['fee_cost']
         capital += pnl
         peak     = max(peak, capital)
         max_dd   = max(max_dd, (peak - capital) / peak * 100)

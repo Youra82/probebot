@@ -113,21 +113,20 @@ def select_strategy(move_stats: dict, correlations: dict, movements: list,
     if len(top2) > 1 and top2[0] > 0 and top2[1] / top2[0] > 0.75:
         strategy = 'HYBRID'
 
-    # Tradeable types: only ROBUST or STABIL from OOS validation
+    # Tradeable types: only ROBUST or STABIL from OOS validation, with enough
+    # training samples that the label itself isn't a small-sample fluke.
     tradeable = []
     if validation_results:
         for mtype, vr in validation_results.items():
             rl = vr.get('reliability', {})
             label = rl.get('label', '') if isinstance(rl, dict) else str(rl)
-            if label in ('ROBUST', 'STABIL'):
+            if label in ('ROBUST', 'STABIL') and vr.get('n_train', 0) >= 20:
                 direction = 'LONG' if ('UP' in mtype) else 'SHORT'
                 tradeable.append({'move_type': mtype, 'direction': direction})
 
-    # Fallback: all types with ≥20 events
-    if not tradeable:
-        for mtype, stats in move_stats.items():
-            if stats.get('n', 0) >= 20:
-                direction = 'LONG' if ('UP' in mtype) else 'SHORT'
-                tradeable.append({'move_type': mtype, 'direction': direction})
+    # Kein Fallback: wenn keine OOS-validierten Typen existieren, bleibt tradeable
+    # leer. Ein Event-Count-Fallback ohne OOS-Prüfung würde das Kernprinzip
+    # verletzen ("erst verstehen, dann handeln") und ungeprüfte Muster live
+    # handeln lassen — dann lieber ehrlich "kein Edge gefunden" melden.
 
     return strategy, type_scores, tradeable
