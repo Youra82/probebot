@@ -255,6 +255,37 @@ Trials werden abgebrochen wenn:
 | `best_profit` | Max. PnL%                | Standard — hohe Rendite     |
 | `strict`      | Max. PnL% + Win-Rate-Filter | Konservativ — weniger Trades |
 
+### Overfitting-Sperre — `--force`
+
+**Existiert bereits eine `config_SYM_TF.json`, überspringt der Optimizer automatisch und meldet
+das** (Optimierungsdatum, bisherige Trials, bisherige PnL) — verhindert, dass wiederholte Läufe
+(z.B. per Cron oder aus Versehen) weitere Trials auf denselben 70% Trainingsdaten anhäufen und
+sich so an Rauschen überanpassen ("Trial-Akkumulation").
+
+Um trotzdem neu zu optimieren (z.B. nach einem Code-Fix, neuen Daten oder bewusst geänderten
+Parametern), explizit erzwingen:
+
+```bash
+python -m probebot.analysis.optimizer \
+    --symbol BTC/USDT:USDT --timeframe 1h \
+    --bot_spec artifacts/db/bot_spec_BTC_USDT_USDT_1h.json \
+    --data     artifacts/data/data_BTC_USDT_USDT_1h.parquet \
+    --split_idx 24545 --trials 100 --force
+```
+
+`--force` löscht die alte Optuna-Study (Trial-Historie startet bei 0) und überschreibt die
+bestehende Config garantiert — unabhängig davon, ob das neue Ergebnis numerisch besser aussieht
+als das alte. Über `run_pipeline.sh` entspricht das der Frage **"Bestehende DB-Eintraege
+loeschen? (j/n)"** → `j` (löscht Config-Datei + Optuna-Study für die gewählten Symbol/TF-Kombinationen,
+bevor der Optimizer erneut läuft).
+
+> **Was die Sperre NICHT verhindert:** Mensch-im-Loop-Overfitting — OOS-Ergebnis (Phase 3)
+> anschauen, unzufrieden sein, Parameter ändern, mit `--force` neu optimieren, wieder OOS
+> anschauen, wiederholen. Jeder einzelne Optimizer-Lauf bleibt technisch sauber (sieht nie die
+> 30% OOS-Daten), aber die *Wahl*, wann und wie neu zu optimieren, wird dann indirekt vom
+> OOS-Ergebnis gesteuert. Das lässt sich nicht rein technisch verhindern — Faustregel: OOS-Ergebnis
+> erst anschauen, wenn man mit den Parametern wirklich fertig ist.
+
 ### Ausgabe: `config_SYM_TF.json`
 
 ```json
