@@ -673,6 +673,7 @@ probebot/
 |-- master_runner.py             # Orchestriert alle aktiven Strategien
 |-- install.sh                   # Erstinstallation
 |-- update.sh                    # VPS Update (git reset + secret.json sichern)
+|-- push_configs.sh              # Config + Bot-Spec manuell zurueck ins Repo pushen
 |-- settings.json                # Konfiguration
 |-- secret.json                  # API-Keys (NICHT im Git)
 |-- secret.json.example          # Vorlage für secret.json
@@ -760,6 +761,23 @@ bash update.sh
 ```
 
 `update.sh` sichert `secret.json` vor dem `git reset --hard` und stellt es danach wieder her.
+
+> **Achtung:** `git reset --hard` verwirft lokale Änderungen an bereits von Git getrackten Dateien
+> — auch `config_*.json`, falls die auf diesem Rechner neu optimiert, aber nie gepusht wurden.
+> Vor `update.sh` also erst `bash push_configs.sh` ausführen, wenn lokale Config/Bot-Spec-Änderungen
+> erhalten bleiben sollen (siehe unten).
+
+### Configs + Bot-Specs manuell pushen
+
+```bash
+bash push_configs.sh
+```
+
+Pusht `config_*.json` (Optimizer-Output) **und** `bot_spec_*.json` (Entry-Bedingungen, normalerweise
+nicht von Git getrackt) gemeinsam zurück ins Repo. Sinnvoll nach jedem Optimizer-Lauf, den du behalten
+willst — sonst geht das Ergebnis beim nächsten `update.sh` auf diesem oder einem anderen Rechner
+verloren. Committet nur Configs, Bot-Specs und `settings.json`, nichts anderes. Bei Push-Konflikt
+(Remote hat neuere Commits) wird automatisch gestasht, rebased und erneut versucht.
 
 ---
 
