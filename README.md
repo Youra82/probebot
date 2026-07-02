@@ -21,8 +21,9 @@ wählt automatisch die passende Handelsstrategie und führt live Trades auf Bitg
 10. [Projektstruktur](#projektstruktur)
 11. [Installation](#installation)
 12. [Konfiguration](#konfiguration)
-13. [Live-Betrieb & Cron](#live-betrieb--cron)
-14. [Dateien & Artefakte](#dateien--artefakte)
+13. [Empfohlene Symbole](#empfohlene-symbole)
+14. [Live-Betrieb & Cron](#live-betrieb--cron)
+15. [Dateien & Artefakte](#dateien--artefakte)
 
 ---
 
@@ -792,6 +793,60 @@ bash update.sh
 ```
 
 > `secret.json` wird NICHT von Git getrackt. Bitget API braucht READ + TRADE Permissions.
+
+---
+
+## Empfohlene Symbole
+
+**Timeframe: 1h.** Getestet wurden BTC auf 1d/1h/4h und ETH auf 1h/4h — auf 1d fehlen bei den
+meisten Coins genug Kerzen für eine statistisch belastbare 70/30-Validierung (siehe 1.4), auf 4h
+war bislang bei keinem Symbol ein Edge validierbar. 1h liefert genug Kerzen/Jahr (~8.800) für
+robuste OOS-Stats und war in beiden bisherigen Erfolgsfällen (ETH, SOL) der validierende Timeframe.
+
+**Auswahlkriterium:** ≥4 Jahre 1h-Historie auf Bitget Futures (direkt gegen die API verifiziert,
+Stand 2026-07-02) — echte Coins, keine der neuerdings gelisteten tokenisierten Aktien/Rohstoffe
+(SPCX, MSTR, XAU, INTC, NATGAS, …), die ebenfalls unter `.../USDT:USDT` laufen und sich sonst
+unbemerkt einschleichen.
+
+| # | Symbol | Kategorie | 1h-Daten ab |
+|---|--------|-----------|-------------|
+| 1 | BTC | Major | 2021 |
+| 2 | ETH | Major | 2021 |
+| 3 | XRP | Major | 2021 |
+| 4 | BNB | Exchange-Coin | 2021 |
+| 5 | ADA | L1 | 2021 |
+| 6 | DOT | L1 | 2021 |
+| 7 | LTC | Payment/Legacy | 2021 |
+| 8 | BCH | Payment/Legacy | 2021 |
+| 9 | ATOM | L1 (Cosmos) | 2021 |
+| 10 | ETC | Legacy | 2021 |
+| 11 | TRX | L1 | 2021 |
+| 12 | FIL | Storage | 2021 |
+| 13 | LINK | Oracle/DeFi | 2021 |
+| 14 | UNI | DeFi | 2021 |
+| 15 | SOL | L1 | 2022 |
+| 16 | DOGE | Meme | 2022 |
+| 17 | AVAX | L1 | 2022 |
+| 18 | NEAR | L1 | 2022 |
+| 19 | XLM | Payment | 2022 |
+| 20 | ICP | L1 | 2022 |
+
+**Bereits getestet (Stand 2026-07-02):**
+
+| Symbol/TF | Ergebnis |
+|-----------|----------|
+| BTC 1d/1h/4h | Kein validierter Edge |
+| ETH 4h | Kein validierter Edge |
+| **ETH 1h** | ✅ `IMPULSE_DOWN` validiert — OOS: 79% WR, PF 14.1, DD 6.2% |
+| **SOL 1h** | ✅ `IMPULSE_DOWN` validiert — OOS: 76% WR, PF 11.0, DD 3.5% |
+
+`IMPULSE_DOWN` validiert bislang nur bei ETH/SOL, nicht bei BTC — plausibel (BTC ist der
+"ruhigste" Coin, Alts neigen zu schärferen Abwärts-Impulsen/Liquidationskaskaden). Reproduziert
+sich über zwei unabhängige Symbole, spricht also eher für ein echtes Muster als für Zufall.
+
+**Zweite Welle (später, sobald mehr Historie vorliegt):** jüngere, hochvolatile Alts mit aktuell
+nur 1–2,5 Jahren 1h-Historie — zu wenig für eine erste robuste OOS-Validierung, aber vielversprechend:
+SUI (2023), ARB (2023), INJ (2023), OP (2023), RUNE (2023), APT (2023), TIA (2024), SEI (2024), WLD (2024).
 
 ---
 
