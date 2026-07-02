@@ -29,9 +29,10 @@ _BOOTSTRAP_N = 200       # Bootstrap resamples for CI
 
 
 class Correlator:
-    def __init__(self, db: ForensicsDB, lookback: int = 5):
+    def __init__(self, db: ForensicsDB, lookback: int = 5, verbose: bool = True):
         self.db = db
         self.lookback = lookback
+        self.verbose = verbose
 
     def analyze(
         self,
@@ -60,14 +61,17 @@ class Correlator:
         for mtype in move_types:
             subset = [m for m in movements if m.move_type == mtype]
             if len(subset) < 3:
-                print(f"  [correlator] skip {mtype}: only {len(subset)} events")
+                if self.verbose:
+                    print(f"  [correlator] skip {mtype}: only {len(subset)} events")
                 continue
 
             if len(subset) < _MIN_EVENTS:
-                print(f"  [correlator] ⚠️  {mtype}: {len(subset)} events (< {_MIN_EVENTS}) — low statistical power")
+                if self.verbose:
+                    print(f"  [correlator] ⚠️  {mtype}: {len(subset)} events (< {_MIN_EVENTS}) — low statistical power")
                 meta[mtype] = {'low_count_warning': True, 'n_events': len(subset)}
 
-            print(f"  [correlator] analyzing {mtype} ({len(subset)} events)...")
+            if self.verbose:
+                print(f"  [correlator] analyzing {mtype} ({len(subset)} events)...")
             ranked, mtype_meta = self._analyze_type(df, subset, symbol, timeframe, mtype)
             correlations[mtype] = ranked
             meta[mtype] = {**meta.get(mtype, {}), **mtype_meta}
@@ -306,8 +310,9 @@ class Correlator:
 
         if to_remove:
             deduped = [r for r in ranked if r['feature'] not in to_remove]
-            removed_names = ', '.join(sorted(to_remove)[:5])
-            print(f"    [dedup] removed {len(to_remove)} correlated features: {removed_names}{'...' if len(to_remove)>5 else ''}")
+            if self.verbose:
+                removed_names = ', '.join(sorted(to_remove)[:5])
+                print(f"    [dedup] removed {len(to_remove)} correlated features: {removed_names}{'...' if len(to_remove)>5 else ''}")
             return deduped
         return ranked
 

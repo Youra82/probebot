@@ -312,6 +312,7 @@ for TIMEFRAME in "${TIMEFRAMES[@]}"; do
             "--top_n"      "$TOP_N"
             "--mode"       "full"
             "$DD_FLAG"
+            "--quiet"
         )
         [ -n "$TYPES_INPUT" ] && ARGS+=("--movement_types" "$TYPES_INPUT")
         [ -n "$CLEAR_FLAG"  ] && ARGS+=("$CLEAR_FLAG")

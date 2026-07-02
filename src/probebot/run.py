@@ -45,7 +45,14 @@ def main():
     parser.add_argument('--movement_types', default=None)
     parser.add_argument('--scan_candles', type=int, default=None,
                         help='Live-Modus: Anzahl der letzten Kerzen die auf Bewegungen geprüft werden')
+    parser.add_argument('--quiet', action='store_true', default=False,
+                        help='Nur ein an-Ort-bleibender Statusbalken statt der vollen Detail-Ausgabe '
+                             '(Details landen weiterhin im HTML-Report). Für Batch-Läufe über viele Symbole.')
     args = parser.parse_args()
+    quiet = args.quiet
+    if quiet:
+        import warnings
+        warnings.filterwarnings('ignore')  # matplotlib/scipy Warnungen nicht in den Statusbalken mischen
 
     # ─── Load settings ──────────────────────────────────────────────────────
     settings_path = ROOT / 'settings.json'
@@ -87,9 +94,25 @@ def main():
         if use_telegram and tg_token and path:
             send_document(tg_token, tg_chat, path, caption)
 
-    print(f"\nProbebot starting...")
-    print(f"  Symbol: {symbol} | TF: {timeframe} | Mode: {args.mode}")
-    print(f"  Telegram: {'enabled' if (use_telegram and tg_token) else 'disabled'}")
+    def _status(msg: str, final: bool = False):
+        """Verbose: normale Zeile. Quiet: an-Ort-bleibender Statusbalken (\\r), nur die
+        Abschlusszeile (final=True) bekommt einen echten Zeilenumbruch und bleibt stehen."""
+        if not quiet:
+            print(msg)
+            return
+        line = f"  {symbol} {timeframe}  {msg}"
+        pad = ' ' * max(0, 100 - len(line))
+        sys.stdout.write(f"\r{line}{pad}")
+        if final:
+            sys.stdout.write('\n')
+        sys.stdout.flush()
+
+    if not quiet:
+        print(f"\nProbebot starting...")
+        print(f"  Symbol: {symbol} | TF: {timeframe} | Mode: {args.mode}")
+        print(f"  Telegram: {'enabled' if (use_telegram and tg_token) else 'disabled'}")
+    else:
+        _status("[0/6] Starte...")
 
     # ─── LIVE MODE ──────────────────────────────────────────────────────────
     if args.mode == 'live':
@@ -129,14 +152,17 @@ def main():
 
     loader = DataLoader(exchange_id=exchange, secret_path=str(SECRET_PATH))
     db = ForensicsDB()
-    miner = PatternMiner(db, lookback=settings.get('lookback_candles', 10))
-    correlator = Correlator(db, lookback=5)
-    drill_engine = DrillDownEngine(loader, timeframe_chain=['1d'] + drill_tfs)
+    miner = PatternMiner(db, lookback=settings.get('lookback_candles', 10), verbose=not quiet)
+    correlator = Correlator(db, lookback=5, verbose=not quiet)
+    drill_engine = DrillDownEngine(loader, timeframe_chain=['1d'] + drill_tfs, verbose=not quiet)
 
     # ─── [1] Load data ───────────────────────────────────────────────────────
-    print(f"\n[1/6] Loading {timeframe} data for {symbol}...")
+    _status(f"[1/6] Lade Daten...") if quiet else print(f"\n[1/6] Loading {timeframe} data for {symbol}...")
     df_raw = loader.fetch(symbol, timeframe, start_date, end_date)
-    print(f"  Loaded {len(df_raw)} candles")
+    if not quiet:
+        print(f"  Loaded {len(df_raw)} candles")
+    else:
+        _status(f"[1/6] {len(df_raw)} Kerzen geladen")
 
     if df_raw.empty:
         listed = symbol in (getattr(loader.exchange, 'markets', None) or {})
@@ -144,7 +170,10 @@ def main():
             msg = f"⏭️  {symbol} ist auf {exchange} nicht gelistet — übersprungen."
         else:
             msg = f"⏭️  Keine Daten für {symbol} {timeframe} im Zeitraum {start_date} → {end_date} — übersprungen."
-        print(msg)
+        if quiet:
+            _status(msg, final=True)
+        else:
+            print(msg)
         tg_msg(msg)
         db.close()
         sys.exit(2)  # 2 = kein Fehler, nur nichts zu tun — Aufrufer soll weitermachen
@@ -164,18 +193,19 @@ def main():
     _gap_ratio = _max_gap / _expected_min
     _max_gap_days = _max_gap / 1440
 
-    print(f"  Lücken-Check: median={_median_gap:.0f}min, max={_max_gap:.0f}min "
-          f"({_max_gap_days:.1f} Tage, {_gap_ratio:.0f}× erwartet={_expected_min}min)")
-
-    if _gap_ratio > 10:
-        print(f"  ⚠️  Datenlücken erkannt: max. Lücke {_max_gap_days:.1f} Tage bei {timeframe} — Ergebnisse können Artefakte enthalten")
-    elif _gap_ratio > 2:
-        print(f"  ⚠️  Daten-Warnung: Max-Lücke {_gap_ratio:.0f}× größer als erwartet")
+    if not quiet:
+        print(f"  Lücken-Check: median={_median_gap:.0f}min, max={_max_gap:.0f}min "
+              f"({_max_gap_days:.1f} Tage, {_gap_ratio:.0f}× erwartet={_expected_min}min)")
+        if _gap_ratio > 10:
+            print(f"  ⚠️  Datenlücken erkannt: max. Lücke {_max_gap_days:.1f} Tage bei {timeframe} — Ergebnisse können Artefakte enthalten")
+        elif _gap_ratio > 2:
+            print(f"  ⚠️  Daten-Warnung: Max-Lücke {_gap_ratio:.0f}× größer als erwartet")
 
     # ─── [2] Compute features ────────────────────────────────────────────────
-    print(f"\n[2/6] Computing features ({len(df_raw)} candles)...")
-    df = compute_all_features(df_raw)
-    print(f"  {len(df.columns)} feature columns computed")
+    _status("[2/6] Berechne Features...") if quiet else print(f"\n[2/6] Computing features ({len(df_raw)} candles)...")
+    df = compute_all_features(df_raw, verbose=not quiet)
+    if not quiet:
+        print(f"  {len(df.columns)} feature columns computed")
 
     # Save processed df to parquet so optimizer/show_results can load without re-fetching
     _data_dir = ROOT / 'artifacts' / 'data'
@@ -183,10 +213,11 @@ def main():
     _sym_safe = symbol.replace('/', '_').replace(':', '_')
     _data_path = _data_dir / f'data_{_sym_safe}_{timeframe}.parquet'
     df.to_parquet(str(_data_path), index=False)
-    print(f"  Data cached: {_data_path.name}")
+    if not quiet:
+        print(f"  Data cached: {_data_path.name}")
 
     # ─── [3] Detect movements ────────────────────────────────────────────────
-    print(f"\n[3/6] Detecting movements...")
+    _status("[3/6] Erkenne Bewegungen...") if quiet else print(f"\n[3/6] Detecting movements...")
 
     # Berechne Ziel-Events aus tatsächlicher Datenzeitspanne
     # (Bitget limitiert 1h auf ~5200 Kerzen — CLI-Args können weiter zurückreichen)
@@ -199,8 +230,9 @@ def main():
         _years_pre = 1.0
     _target_epy = _target_events_per_year(timeframe)
     _min_events_needed = int(_target_epy * _years_pre)
-    print(f"  Daten: {str(df['timestamp'].iloc[0])[:10]} → {str(df['timestamp'].iloc[-1])[:10]} "
-          f"({len(df)} Kerzen, {_years_pre:.2f}J) → Ziel ≥{_min_events_needed} Events")
+    if not quiet:
+        print(f"  Daten: {str(df['timestamp'].iloc[0])[:10]} → {str(df['timestamp'].iloc[-1])[:10]} "
+              f"({len(df)} Kerzen, {_years_pre:.2f}J) → Ziel ≥{_min_events_needed} Events")
 
     # Timeframe-adaptive Detector-Parameter
     # Je kürzer der TF, desto strenger die Strukturkriterien (sonst Rauschen)
@@ -237,11 +269,12 @@ def main():
         _used_atr = _atr_try
         if len(all_movements) >= _min_events_needed:
             break
-        if _atr_try != _atr_steps[-1]:
+        if _atr_try != _atr_steps[-1] and not quiet:
             print(f"  atr_impulse={_atr_try}: {len(all_movements)} Events < Ziel {_min_events_needed} → senke auf {_atr_steps[_atr_steps.index(_atr_try)+1]}")
 
-    print(f"  Detector: atr_impulse={_used_atr}, breakout={_tf_p['breakout_bars']}b, "
-          f"reversal={_tf_p['reversal_min_run']}c → {len(all_movements)} Events")
+    if not quiet:
+        print(f"  Detector: atr_impulse={_used_atr}, breakout={_tf_p['breakout_bars']}b, "
+              f"reversal={_tf_p['reversal_min_run']}c → {len(all_movements)} Events")
 
     # Auto-Kalibrierung: optimalen min_move_pct für diesen Coin + Zeitraum finden
     # Nur expliziter CLI-Wert zählt als "manuell" — settings.json-Wert wird überschrieben
@@ -256,25 +289,31 @@ def main():
         )
         _chosen_n = next((n for t, n in _calib if t == min_move_pct), 0)
         _label = _best_calib_label(_chosen_n, _min_total)
-        print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%, "
-              f"Zeitraum={_years:.1f}J, Ziel ≥{_min_total} Events):")
-        for _t, _n in _calib:
-            _marker = '→' if _t == min_move_pct else ' '
-            _flag = ' ✓' if _n >= _min_total else ''
-            print(f"  {_marker} {_t:.2f}%: {_n:4d} Events{_flag}")
-        print(f"  Gewählt: min_move_pct = {min_move_pct}%  [{_label}]")
-    else:
+        if not quiet:
+            print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%, "
+                  f"Zeitraum={_years:.1f}J, Ziel ≥{_min_total} Events):")
+            for _t, _n in _calib:
+                _marker = '→' if _t == min_move_pct else ' '
+                _flag = ' ✓' if _n >= _min_total else ''
+                print(f"  {_marker} {_t:.2f}%: {_n:4d} Events{_flag}")
+            print(f"  Gewählt: min_move_pct = {min_move_pct}%  [{_label}]")
+    elif not quiet:
         print(f"  min_move_pct = {min_move_pct}% (manuell)")
 
     movements = [m for m in all_movements if abs(m.magnitude_pct) >= min_move_pct]
-    print(f"  Detected {len(movements)} movements (≥{min_move_pct}%)")
-
-    rpt.print_header(symbol, timeframe, start_date, end_date, len(movements))
-    rpt.print_movement_summary(movements)
+    if not quiet:
+        print(f"  Detected {len(movements)} movements (≥{min_move_pct}%)")
+        rpt.print_header(symbol, timeframe, start_date, end_date, len(movements))
+        rpt.print_movement_summary(movements)
+    else:
+        _status(f"[3/6] {len(movements)} Bewegungen (≥{min_move_pct}%)")
 
     if not movements:
         msg = f"⚠️ Keine signifikanten Bewegungen ≥{min_move_pct}% gefunden.\nTimeframe: {timeframe} | Symbol: {symbol}"
-        print(msg)
+        if quiet:
+            _status(msg, final=True)
+        else:
+            print(msg)
         tg_msg(msg)
         db.close()
         return
@@ -291,36 +330,45 @@ def main():
     movements_train = [m for m in movements if m.idx < split_idx]
     movements_test  = [m for m in movements if m.idx >= split_idx]
 
-    print(f"\n  Datentrennung (70% / 30%): Split bei {split_date}")
-    print(f"  TRAINING  [{start_date} → {split_date}]: {len(movements_train)} Bewegungen")
-    print(f"  TEST      [{split_date} → {end_date}]:   {len(movements_test)} Bewegungen  ← UNSICHTBAR für Lernen")
+    if not quiet:
+        print(f"\n  Datentrennung (70% / 30%): Split bei {split_date}")
+        print(f"  TRAINING  [{start_date} → {split_date}]: {len(movements_train)} Bewegungen")
+        print(f"  TEST      [{split_date} → {end_date}]:   {len(movements_test)} Bewegungen  ← UNSICHTBAR für Lernen")
 
     if len(movements_train) < 5:
         msg = f"⚠️ Zu wenige Trainings-Bewegungen ({len(movements_train)}). Bitte längeren Zeitraum oder kleineren min_move_pct wählen."
-        print(msg)
+        if quiet:
+            _status(msg, final=True)
+        else:
+            print(msg)
         tg_msg(msg)
         db.close()
         return
 
     # ─── [4] Mine patterns + correlations (NUR Training-Daten!) ──────────────
-    print(f"\n[4/6] Mining patterns & correlations (NUR 70% Training: {len(movements_train)} Events)...")
+    _status(f"[4/6] Mining & Korrelation ({len(movements_train)} Events)...") if quiet else \
+        print(f"\n[4/6] Mining patterns & correlations (NUR 70% Training: {len(movements_train)} Events)...")
     miner.mine_movements(df_train, movements_train, symbol, timeframe, clear_existing=args.clear)
     all_move_types = list({m.move_type for m in movements_train})
     correlations, correlations_meta = correlator.analyze(
         df_train, movements_train, symbol, timeframe, move_types=all_move_types
     )
-    rpt.print_correlations(correlations, top_n=top_n)
+    if not quiet:
+        rpt.print_correlations(correlations, top_n=top_n)
 
     clusters = {}
     if len(movements_train) >= 4:
         clusters = correlator.cluster_movements(df_train, movements_train, n_clusters=min(4, len(movements_train) // 2))
-        rpt.print_clusters(clusters)
+        if not quiet:
+            rpt.print_clusters(clusters)
 
     # ─── [4b] Out-of-Sample Validierung (Test-Daten — Bot hat diese NIE gesehen) ──
     from probebot.forensics.validator import OutOfSampleValidator
     validation_results = {}
+    robust_cnt = bot_cnt = 0
     if movements_test and correlations:
-        print(f"\n[4b] Out-of-Sample Validierung ({len(movements_test)} Test-Events ab {split_date})...")
+        _status("[4b] OOS-Validierung...") if quiet else \
+            print(f"\n[4b] Out-of-Sample Validierung ({len(movements_test)} Test-Events ab {split_date})...")
         validator = OutOfSampleValidator(lookback=3, signal_window=2)
         validation_results = validator.validate(df, split_idx, movements_test, correlations)
         # Trainings-Anzahl nachträglich eintragen
@@ -333,21 +381,22 @@ def main():
                           if vr['reliability']['label'] in ('ROBUST', 'STABIL')
                           and vr.get('precision_pct', 0) >= 10
                           and vr.get('n_train', 0) >= 20)
-        print(f"  OOS Validierung: {robust_cnt}/{len(validation_results)} ROBUST/STABIL  →  {bot_cnt} für Bot verwendbar")
-        for mtype, vr in sorted(validation_results.items()):
-            n_tr   = vr.get('n_train', 0)
-            prec   = vr.get('precision_pct', 0)
-            label  = vr['reliability']['label']
-            in_bot = label in ('ROBUST', 'STABIL') and prec >= 10 and n_tr >= 20
-            icon   = vr['reliability']['icon']
-            if label in ('ROBUST', 'STABIL') and not in_bot:
-                excl = 'n<20' if n_tr < 20 else 'prec<10%'
-                suffix = f"  ⛔ excl ({excl})"
-            else:
-                suffix = ""
-            print(f"    {icon} {mtype:<28} n={n_tr:3d}  In-Sample: {vr['insample_hit']:3d}%  "
-                  f"OOS-Recall: {vr['recall_pct']:3d}%  OOS-Precision: {prec:3d}%  [{label}]{suffix}")
-    else:
+        if not quiet:
+            print(f"  OOS Validierung: {robust_cnt}/{len(validation_results)} ROBUST/STABIL  →  {bot_cnt} für Bot verwendbar")
+            for mtype, vr in sorted(validation_results.items()):
+                n_tr   = vr.get('n_train', 0)
+                prec   = vr.get('precision_pct', 0)
+                label  = vr['reliability']['label']
+                in_bot = label in ('ROBUST', 'STABIL') and prec >= 10 and n_tr >= 20
+                icon   = vr['reliability']['icon']
+                if label in ('ROBUST', 'STABIL') and not in_bot:
+                    excl = 'n<20' if n_tr < 20 else 'prec<10%'
+                    suffix = f"  ⛔ excl ({excl})"
+                else:
+                    suffix = ""
+                print(f"    {icon} {mtype:<28} n={n_tr:3d}  In-Sample: {vr['insample_hit']:3d}%  "
+                      f"OOS-Recall: {vr['recall_pct']:3d}%  OOS-Precision: {prec:3d}%  [{label}]{suffix}")
+    elif not quiet:
         print(f"\n[4b] OOS-Validierung übersprungen (keine Test-Events)")
 
     # ─── Strategy selection ──────────────────────────────────────────────────
@@ -364,14 +413,13 @@ def main():
         'type_scores': {k: round(v, 2) for k, v in _type_scores.items()},
         'tradeable':   _tradeable,
     }
-    print(f"\n  Strategie-Auswahl: {_selected_strat}  "
-          f"(Score: {_type_scores.get(_selected_strat, 0):.1f})")
+    if not quiet:
+        print(f"\n  Strategie-Auswahl: {_selected_strat}  "
+              f"(Score: {_type_scores.get(_selected_strat, 0):.1f})")
 
     # ─── [5] Drill-Down ──────────────────────────────────────────────────────
     drill_down_results = {}
     if drill_down and movements:
-        print(f"\n[5/6] MTF Drill-Down (top {top_n} events)...")
-
         if args.investigate_date:
             import pandas as pd
             target_ts = pd.Timestamp(args.investigate_date)
@@ -380,8 +428,14 @@ def main():
         else:
             focus = sorted(movements, key=lambda m: abs(m.magnitude_pct), reverse=True)[:top_n]
 
+        if not quiet:
+            print(f"\n[5/6] MTF Drill-Down (top {top_n} events)...")
+
         for i, m in enumerate(focus):
-            print(f"\n  Event {i+1}/{len(focus)}: {m.move_type} @ {str(m.timestamp)[:16]}")
+            if quiet:
+                _status(f"[5/6] Drill-Down {i+1}/{len(focus)}...")
+            else:
+                print(f"\n  Event {i+1}/{len(focus)}: {m.move_type} @ {str(m.timestamp)[:16]}")
             dd = drill_engine.drill(symbol, m, m.direction, start_tf=timeframe)
             drill_down_results[str(m.timestamp)] = dd
 
@@ -395,20 +449,22 @@ def main():
             if movement_db_id > 0:
                 db.update_drill_down(movement_db_id, dd)
 
-            rpt.print_movement_detail(m, dd, similar)
+            if not quiet:
+                rpt.print_movement_detail(m, dd, similar)
 
-    else:
+    elif not quiet:
         print(f"\n[5/6] Drill-down skipped")
 
     # ─── [6] Charts lokal + 2 Dateien per Telegram ──────────────────────────
-    print(f"\n[6/6] Generating charts + reports...")
+    _status("[6/6] Erstelle Charts + Reports...") if quiet else print(f"\n[6/6] Generating charts + reports...")
 
     chart_dir = ROOT / 'artifacts' / 'charts'
     chart_dir.mkdir(parents=True, exist_ok=True)
     sym_safe = symbol.replace('/', '_').replace(':', '_')
 
     # Charts lokal speichern (kein Telegram)
-    print("  Generating charts (lokal)...")
+    if not quiet:
+        print("  Generating charts (lokal)...")
     save_chart(overview_chart, df=df, movements=movements,
                symbol=symbol, timeframe=timeframe,
                prefix=f'overview_{sym_safe}_{timeframe}')
@@ -431,7 +487,8 @@ def main():
                            prefix=f'drilldown_{sym_safe}_{str(m.timestamp)[:10]}')
 
     # ── Datei 1: HTML-Report ─────────────────────────────────────────────────
-    print("  Generating HTML report...")
+    if not quiet:
+        print("  Generating HTML report...")
     html_path = str(ROOT / 'artifacts' / 'db' / f'report_{sym_safe}_{timeframe}.html')
     # focus movements = die top-N die auch für Drill-Down genutzt wurden
     focus_movements = sorted(movements, key=lambda x: abs(x.magnitude_pct), reverse=True)[:top_n]
@@ -448,10 +505,12 @@ def main():
         drill_down_results=drill_down_results,
         focus_movements=focus_movements,
     )
-    print(f"  HTML saved: {html_path}")
+    if not quiet:
+        print(f"  HTML saved: {html_path}")
 
     # ── Datei 2: Bot-Spec JSON ───────────────────────────────────────────────
-    print("  Generating bot spec...")
+    if not quiet:
+        print("  Generating bot spec...")
     spec_path = str(ROOT / 'artifacts' / 'db' / f'bot_spec_{sym_safe}_{timeframe}.json')
     generate_bot_spec(
         symbol=symbol, timeframe=timeframe,
@@ -465,7 +524,8 @@ def main():
         split_date=split_date,
         split_idx=split_idx,
     )
-    print(f"  Bot-Spec saved: {spec_path}")
+    if not quiet:
+        print(f"  Bot-Spec saved: {spec_path}")
 
     # ── Telegram: nur diese 2 Dateien ────────────────────────────────────────
     tg_doc(html_path,
@@ -479,9 +539,14 @@ def main():
 
     db.log_scan(symbol, timeframe, start_date, end_date, len(movements))
     db.close()
-    print(f"\nProbebot finished.")
-    print(f"  HTML:     {html_path}")
-    print(f"  Bot-Spec: {spec_path}")
+    if quiet:
+        edge_info = f"kein Edge" if bot_cnt == 0 else f"{bot_cnt} Typ(en) verwendbar"
+        _status(f"✓ fertig — {len(movements)} Events | OOS: {robust_cnt}/{len(validation_results)} "
+                f"ROBUST/STABIL → {edge_info}", final=True)
+    else:
+        print(f"\nProbebot finished.")
+        print(f"  HTML:     {html_path}")
+        print(f"  Bot-Spec: {spec_path}")
 
 
 # ─── Telegram helper functions ────────────────────────────────────────────────

@@ -8,7 +8,7 @@ from .structure import add_all_structure
 from .volume import add_all_volume
 
 
-def compute_all_features(df: pd.DataFrame, min_candles: int = 200) -> pd.DataFrame:
+def compute_all_features(df: pd.DataFrame, min_candles: int = 200, verbose: bool = True) -> pd.DataFrame:
     """
     Compute the full feature set for the given OHLCV DataFrame.
     Returns the enriched DataFrame (all NaN rows from warmup period preserved).
@@ -18,16 +18,20 @@ def compute_all_features(df: pd.DataFrame, min_candles: int = 200) -> pd.DataFra
 
     df = df.copy()
 
-    print("  [features] computing technical indicators...")
+    if verbose:
+        print("  [features] computing technical indicators...")
     df = add_all_technical(df)
 
-    print("  [features] computing physics/complexity indicators...")
+    if verbose:
+        print("  [features] computing physics/complexity indicators...")
     df = add_all_physics(df)
 
-    print("  [features] computing market structure...")
+    if verbose:
+        print("  [features] computing market structure...")
     df = add_all_structure(df)
 
-    print("  [features] computing volume analysis...")
+    if verbose:
+        print("  [features] computing volume analysis...")
     df = add_all_volume(df)
 
     # DNA-style candle encoding (inspired by dnabot)

@@ -54,12 +54,14 @@ class DrillDownEngine:
         timeframe_chain: Optional[List[str]] = None,
         candles_before: int = 60,
         candles_after: int = 20,
+        verbose: bool = True,
     ):
         self.loader = loader
         self.chain = timeframe_chain or DRILL_DOWN_CHAIN
         self.candles_before = candles_before
         self.candles_after = candles_after
         self.detector = MovementDetector()
+        self.verbose = verbose
 
     def drill(
         self,
@@ -82,7 +84,8 @@ class DrillDownEngine:
             start_idx = 0
 
         for tf in self.chain[start_idx + 1:]:
-            print(f"  [drill-down] zooming into {tf}...")
+            if self.verbose:
+                print(f"  [drill-down] zooming into {tf}...")
             try:
                 level_result = self._analyze_level(symbol, tf, center_ts, target_direction)
                 results[tf] = level_result
@@ -90,7 +93,8 @@ class DrillDownEngine:
                 # If we have a high-confidence entry at this level, we can stop
                 if level_result.get('entry_confidence', 0) >= 8:
                     results[tf]['_stopped_here'] = True
-                    print(f"  [drill-down] high-confidence entry found at {tf}, stopping")
+                    if self.verbose:
+                        print(f"  [drill-down] high-confidence entry found at {tf}, stopping")
                     break
             except Exception as e:
                 results[tf] = {'error': str(e)}
@@ -115,7 +119,7 @@ class DrillDownEngine:
 
         # Compute features
         try:
-            df = compute_all_features(df_raw, min_candles=50)
+            df = compute_all_features(df_raw, min_candles=50, verbose=self.verbose)
         except Exception as e:
             return {'error': f'feature computation failed: {e}'}
 

@@ -14,9 +14,10 @@ from .database import ForensicsDB
 
 
 class PatternMiner:
-    def __init__(self, db: ForensicsDB, lookback: int = 10):
+    def __init__(self, db: ForensicsDB, lookback: int = 10, verbose: bool = True):
         self.db = db
         self.lookback = lookback
+        self.verbose = verbose
 
     def mine_movements(
         self,
@@ -32,7 +33,8 @@ class PatternMiner:
         if clear_existing:
             self.db.clear_movements(symbol, timeframe)
 
-        print(f"  [miner] mining {len(movements)} movements...")
+        if self.verbose:
+            print(f"  [miner] mining {len(movements)} movements...")
         for m in movements:
             i = m.idx
 
@@ -68,7 +70,8 @@ class PatternMiner:
                 during=during,
             )
 
-        print(f"  [miner] stored {len(movements)} movements in DB")
+        if self.verbose:
+            print(f"  [miner] stored {len(movements)} movements in DB")
 
     def find_similar(
         self,
