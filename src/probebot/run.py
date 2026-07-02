@@ -139,11 +139,15 @@ def main():
     print(f"  Loaded {len(df_raw)} candles")
 
     if df_raw.empty:
-        msg = f"⚠️  Keine Daten geladen für {symbol} {timeframe} ({start_date} → {end_date})."
+        listed = symbol in (getattr(loader.exchange, 'markets', None) or {})
+        if not listed:
+            msg = f"⏭️  {symbol} ist auf {exchange} nicht gelistet — übersprungen."
+        else:
+            msg = f"⏭️  Keine Daten für {symbol} {timeframe} im Zeitraum {start_date} → {end_date} — übersprungen."
         print(msg)
         tg_msg(msg)
         db.close()
-        sys.exit(1)
+        sys.exit(2)  # 2 = kein Fehler, nur nichts zu tun — Aufrufer soll weitermachen
 
     # ─── Datenqualitäts-Check: Lücken erkennen ───────────────────────────────
     # Bitget liefert für 1h/4h historische Daten mit bis zu 56-Tage-Lücken.

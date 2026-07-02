@@ -323,7 +323,12 @@ for TIMEFRAME in "${TIMEFRAMES[@]}"; do
         $PYTHON -m probebot.run "${ARGS[@]}" 2>&1 | tee "$LOGFILE"
 
         EXIT_CODE=${PIPESTATUS[0]}
-        if [ $EXIT_CODE -ne 0 ]; then
+        if [ $EXIT_CODE -eq 2 ]; then
+            # 2 = Symbol nicht gelistet oder keine Daten im Zeitraum — kein
+            # Fehler, einfach uebersprungen. Zaehlt nicht zu OVERALL_EXIT,
+            # damit die Pipeline fuer die anderen Symbole/TFs normal weiterlaeuft.
+            echo -e "${YELLOW}$SYMBOL $TIMEFRAME uebersprungen (nicht gelistet oder keine Daten im Zeitraum).${NC}"
+        elif [ $EXIT_CODE -ne 0 ]; then
             echo -e "${RED}Fehler bei $SYMBOL $TIMEFRAME (Exit $EXIT_CODE). Log: $LOGFILE${NC}"
             OVERALL_EXIT=$EXIT_CODE
         else

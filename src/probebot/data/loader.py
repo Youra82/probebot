@@ -56,15 +56,21 @@ class DataLoader:
 
         tf_ms = self.exchange.parse_timeframe(timeframe) * 1000
         all_candles = []
-        while since < until:
-            candles = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=200)
-            if not candles:
-                break
-            all_candles.extend(candles)
-            last_ts = candles[-1][0]
-            if last_ts >= until:
-                break
-            since = last_ts + tf_ms
+        try:
+            while since < until:
+                candles = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=200)
+                if not candles:
+                    break
+                all_candles.extend(candles)
+                last_ts = candles[-1][0]
+                if last_ts >= until:
+                    break
+                since = last_ts + tf_ms
+        except ccxt.BadSymbol:
+            # Symbol existiert nicht (mehr) auf der Exchange — wie "keine Daten"
+            # behandeln, damit der Aufrufer das als regulären Skip erkennt statt
+            # an einem unbehandelten Traceback zu scheitern.
+            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
         df = pd.DataFrame(all_candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
