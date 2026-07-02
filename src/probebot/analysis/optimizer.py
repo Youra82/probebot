@@ -257,17 +257,13 @@ def run_optimizer(
 
     config_path = Path(output_dir) / f'config_{sym_safe}_{timeframe}.json'
 
-    # Only overwrite if this run is strictly better
-    if config_path.exists():
-        try:
-            old_pnl = json.loads(config_path.read_text()).get('_meta', {}).get('insample_pnl_pct', float('-inf'))
-            if best_result['pnl_pct'] <= old_pnl:
-                print(f"\n  Ergebnis ({best_result['pnl_pct']:.1f}%) nicht besser als "
-                      f"bestehendes ({old_pnl:.1f}%) — Config NICHT überschrieben")
-                return str(config_path)
-        except Exception:
-            pass
-
+    # Kein "nur überschreiben wenn besser"-Vergleich mehr hier — die einzige
+    # Overfitting-Sperre ist der Exists-Check am Funktionsanfang. Wer bis
+    # hierher kommt, hat entweder noch keine Config (erster Lauf) oder
+    # explizit force=True gewählt (bewusstes Neu-Optimieren) — beides soll
+    # unbedingt speichern, sonst kann ein alter, fehlerhafter Wert (z.B. ein
+    # Backtester-Bug mit unrealistisch hoher PnL) eine korrekte Neuberechnung
+    # dauerhaft blockieren.
     config_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8')
     print(f"\n  Config gespeichert: {config_path.name}")
     print(f"  OOS-Test mit: bash show_results.sh → Mode 1")
