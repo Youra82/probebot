@@ -146,27 +146,35 @@ def run_optimizer(
 
         result = run_backtest(df_train, entry_conditions, tradeable, params, start_capital)
 
-        if result['n_trades'] < min_trades:
-            raise optuna.exceptions.TrialPruned()
-        if result['max_drawdown'] > max_drawdown:
-            raise optuna.exceptions.TrialPruned()
-        if mode == 'strict' and result['win_rate'] < min_win_rate:
-            raise optuna.exceptions.TrialPruned()
+        pruned = (
+            result['n_trades'] < min_trades
+            or result['max_drawdown'] > max_drawdown
+            or (mode == 'strict' and result['win_rate'] < min_win_rate)
+        )
+        if not pruned:
+            counter[0] += 1
 
-        counter[0] += 1
-        done   = len([t for t in study.trials if t.state.name == 'COMPLETE'])
-        pruned = len([t for t in study.trials if t.state.name == 'PRUNED'])
+        # trial.number zaehlt JEDEN Versuch (auch geprunte) — das gibt eine
+        # ehrliche Prozentanzeige. counter[0]/n_trials zaehlte vorher nur
+        # erfolgreiche Trials im Zaehler, blieb bei vielen Prunings also
+        # dauerhaft unter 100%, obwohl Optuna den vollen Trial-Umfang lief.
+        attempt = trial.number + 1
+        done_n   = len([t for t in study.trials if t.state.name == 'COMPLETE'])
+        pruned_n = len([t for t in study.trials if t.state.name == 'PRUNED'])
         try:
             best   = study.best_value
             best_s = f"{best:+.2f}%"
         except ValueError:
             best_s = "      —"
-        pct    = counter[0] / n_trials * 100
-        filled = int(40 * counter[0] / n_trials)
+        pct    = attempt / n_trials * 100
+        filled = int(40 * attempt / n_trials)
         bar    = '█' * filled + '░' * (40 - filled)
-        print(f"\r  [{bar}] {pct:5.1f}%  {counter[0]:4d}/{n_trials}"
-              f"  Best:{best_s}  ✓{done}  ✗{pruned}   ",
+        print(f"\r  [{bar}] {pct:5.1f}%  {attempt:4d}/{n_trials}"
+              f"  Best:{best_s}  ✓{done_n}  ✗{pruned_n}   ",
               end='', flush=True)
+
+        if pruned:
+            raise optuna.exceptions.TrialPruned()
 
         return result['pnl_pct']
 
