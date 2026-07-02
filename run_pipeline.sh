@@ -23,6 +23,26 @@ echo -e "       probebot — Market Forensics Pipeline"
 echo -e "${BLUE}=======================================================${NC}"
 echo ""
 
+# ── Kompletter Neustart? ───────────────────────────────────────────────────────
+echo -e "${YELLOW}Kompletten Neustart? Loescht Forensik-DB, Bot-Specs, Optuna-Studies,${NC}"
+echo -e "${YELLOW}Configs, Reports und Daten-Cache — fuer ALLE Symbole/Timeframes.${NC}"
+echo -e "${CYAN}(Offene Live-Positionen in artifacts/tracker/ bleiben unberuehrt.)${NC}"
+read -p "Alles zuruecksetzen? (j/n) [Standard: n]: " FULL_RESET
+FULL_RESET="${FULL_RESET//[$'\r\n ']/}"
+if [[ "$FULL_RESET" =~ ^[jJyY] ]]; then
+    rm -f artifacts/db/forensics.db
+    rm -f artifacts/db/optuna_probebot.db
+    rm -f artifacts/db/bot_spec_*.json
+    rm -f artifacts/db/report_*.html
+    rm -f artifacts/data/*.parquet
+    rm -f artifacts/charts/*.png
+    rm -f src/probebot/strategy/configs/config_*.json
+    echo -e "${GREEN}✔ Kompletter Reset durchgefuehrt — alle Symbole/Timeframes starten bei Null.${NC}"
+else
+    echo -e "${GREEN}✔ Bestehende Ergebnisse werden beibehalten.${NC}"
+fi
+echo ""
+
 # ── Symbol(e) ────────────────────────────────────────────────────────────────
 DEFAULT_SYMBOL=$(python3 -c "import json; print(json.load(open('settings.json')).get('symbol','BTC/USDT:USDT'))" 2>/dev/null || echo "BTC/USDT:USDT")
 echo -e "${YELLOW}Symbol(e) — Kurzform oder vollstaendig, Leerzeichen = mehrere:${NC}"
@@ -168,11 +188,16 @@ else
     TOP_N=5
 fi
 
-# ── DB leeren? ───────────────────────────────────────────────────────────────
+# ── DB leeren? (nur fragen, wenn nicht schon komplett zurueckgesetzt wurde) ──
 echo ""
-read -p "Bestehende DB-Eintraege loeschen? (j/n) [Standard: n]: " CLEAR_INPUT
-CLEAR_INPUT="${CLEAR_INPUT//[$'\r\n ']/}"
-if [[ "$CLEAR_INPUT" =~ ^[jJyY] ]]; then
+if [[ "$FULL_RESET" =~ ^[jJyY] ]]; then
+    echo -e "${CYAN}Kompletter Neustart wurde bereits oben gewaehlt — nichts mehr fuer die gewaehlten Kombinationen zu loeschen.${NC}"
+    CLEAR_FLAG="--clear"
+    OPT_FORCE="--force"
+else
+    read -p "Bestehende DB-Eintraege fuer die gewaehlten Symbole/Timeframes loeschen? (j/n) [Standard: n]: " CLEAR_INPUT
+    CLEAR_INPUT="${CLEAR_INPUT//[$'\r\n ']/}"
+    if [[ "$CLEAR_INPUT" =~ ^[jJyY] ]]; then
     CLEAR_FLAG="--clear"
     OPT_FORCE="--force"
     echo ""
@@ -207,9 +232,10 @@ except Exception as e:
 " 2>/dev/null
         done
     done
-else
-    CLEAR_FLAG=""
-    OPT_FORCE=""
+    else
+        CLEAR_FLAG=""
+        OPT_FORCE=""
+    fi
 fi
 
 # ── Telegram ─────────────────────────────────────────────────────────────────
