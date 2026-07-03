@@ -107,6 +107,45 @@ tf_default_start() {
     esac
 }
 
+# ── Existierende Phase-1-Ergebnisse erkennen ──────────────────────────────────
+# Falls fuer ALLE gewaehlten Kombinationen schon bot_spec + Daten-Cache
+# existieren (und kein kompletter Neustart gewaehlt wurde), anbieten direkt
+# zu Phase 2 (Optimizer) zu springen — keine der Phase-1-Fragen noetig.
+SKIP_PHASE1="n"
+OPT_FORCE=""
+if [[ ! "$FULL_RESET" =~ ^[jJyY] ]]; then
+    ALL_EXIST="j"
+    for _TF in "${TIMEFRAMES[@]}"; do
+        for _SYM in "${SYMBOLS[@]}"; do
+            _SAFE="${_SYM//[\/:]/_}"
+            if [ ! -f "artifacts/db/bot_spec_${_SAFE}_${_TF}.json" ] || [ ! -f "artifacts/data/data_${_SAFE}_${_TF}.parquet" ]; then
+                ALL_EXIST="n"
+            fi
+        done
+    done
+    if [[ "$ALL_EXIST" == "j" ]]; then
+        echo ""
+        echo -e "${CYAN}Fuer alle gewaehlten Kombinationen existiert bereits eine Forensik-Analyse (Phase 1).${NC}"
+        read -p "Ueberspringen und direkt zu Phase 2 (Optimizer)? (j/n) [Standard: j]: " SKIP_INPUT
+        SKIP_INPUT="${SKIP_INPUT//[$'\r\n ']/}"
+        SKIP_INPUT="${SKIP_INPUT:-j}"
+        if [[ "$SKIP_INPUT" =~ ^[jJyY] ]]; then
+            SKIP_PHASE1="j"
+            echo ""
+            read -p "Bestehende Configs erzwungen ueberschreiben (--force)? (j/n) [Standard: n]: " FORCE_INPUT
+            FORCE_INPUT="${FORCE_INPUT//[$'\r\n ']/}"
+            if [[ "$FORCE_INPUT" =~ ^[jJyY] ]]; then
+                OPT_FORCE="--force"
+            fi
+            echo -e "${GREEN}✔ Phase 1 uebersprungen — nutze bestehende bot_spec/Daten.${NC}"
+        fi
+    fi
+fi
+
+export PYTHONPATH="$SCRIPT_DIR/src"
+
+if [[ "$SKIP_PHASE1" != "j" ]]; then
+
 # ── Zeitraum ─────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${YELLOW}Historischer Zeitraum:${NC}"
@@ -283,7 +322,6 @@ echo ""
 echo -e "${YELLOW}Pipeline startet...${NC}"
 echo ""
 
-export PYTHONPATH="$SCRIPT_DIR/src"
 OVERALL_EXIT=0
 
 # ── Haupt-Loop: alle TF × Symbol-Kombinationen ───────────────────────────────
@@ -348,6 +386,8 @@ fi
 echo -e "${GREEN}=======================================================${NC}"
 echo -e "  ${GREEN}Forensik abgeschlossen!${NC}"
 echo -e "${GREEN}=======================================================${NC}"
+
+fi  # Ende SKIP_PHASE1-Block
 
 # ── Phase 2: Optimizer ────────────────────────────────────────────────────────
 echo ""
