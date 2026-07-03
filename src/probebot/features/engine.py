@@ -6,48 +6,57 @@ from .technical import add_all_technical
 from .physics import add_all_physics
 from .structure import add_all_structure
 from .volume import add_all_volume
+from .scaling import timeframe_scale, sp
 
 
-def compute_all_features(df: pd.DataFrame, min_candles: int = 200, verbose: bool = True) -> pd.DataFrame:
+def compute_all_features(df: pd.DataFrame, min_candles: int = 200, verbose: bool = True,
+                          timeframe: str = '1h', scale_multiplier: float = 1.0) -> pd.DataFrame:
     """
     Compute the full feature set for the given OHLCV DataFrame.
     Returns the enriched DataFrame (all NaN rows from warmup period preserved).
+
+    timeframe: skaliert alle Indikator-Perioden auf dieselbe reale Zeitspanne
+    wie bei 1h (Baseline, scale=1.0 → unveraendertes Verhalten).
+    scale_multiplier: zusaetzlicher Faktor obendrauf (z.B. 0.5/1.5/2.0) — fuer
+    die Perioden-Kandidatensuche in run.py (nicht alle Timeframes haben
+    zwingend die "1h linear skaliert"-Periode als beste Wahl).
     """
     if len(df) < min_candles:
         raise ValueError(f"Need at least {min_candles} candles, got {len(df)}")
 
     df = df.copy()
+    scale = timeframe_scale(timeframe) * scale_multiplier
 
     if verbose:
         print("  [features] computing technical indicators...")
-    df = add_all_technical(df)
+    df = add_all_technical(df, scale=scale)
 
     if verbose:
         print("  [features] computing physics/complexity indicators...")
-    df = add_all_physics(df)
+    df = add_all_physics(df, scale=scale)
 
     if verbose:
         print("  [features] computing market structure...")
-    df = add_all_structure(df)
+    df = add_all_structure(df, scale=scale)
 
     if verbose:
         print("  [features] computing volume analysis...")
-    df = add_all_volume(df)
+    df = add_all_volume(df, scale=scale)
 
     # DNA-style candle encoding (inspired by dnabot)
-    df['dna_code'] = _dna_encode(df)
+    df['dna_code'] = _dna_encode(df, scale=scale)
 
     # Regime label (multi-method consensus)
-    df['regime'] = _regime_consensus(df)
+    df['regime'] = _regime_consensus(df, scale=scale)
 
     # Composite trend score (-10 to +10)
     df['trend_score'] = _trend_score(df)
 
     # Composite momentum score (-10 to +10)
-    df['momentum_score'] = _momentum_score(df)
+    df['momentum_score'] = _momentum_score(df, scale=scale)
 
     # Market readiness score (0-10: how "ready" is market for a big move?)
-    df['move_readiness'] = _move_readiness(df)
+    df['move_readiness'] = _move_readiness(df, scale=scale)
 
     return df
 
@@ -74,11 +83,11 @@ def feature_vector(df: pd.DataFrame, idx: int) -> dict:
 
 # ─── Composite Scores ─────────────────────────────────────────────────────────
 
-def _dna_encode(df: pd.DataFrame) -> pd.Series:
+def _dna_encode(df: pd.DataFrame, scale: float = 1.0) -> pd.Series:
     """Simple dnabot-style candle encoding: direction + body + volatility."""
     close = df['close']
     open_ = df['open']
-    atr = df.get('atr_14', (df['high'] - df['low']).rolling(14).mean())
+    atr = df.get('atr_14', (df['high'] - df['low']).rolling(sp(14, scale)).mean())
 
     direction = np.where(close >= open_, 'B', 'S')
     body = (close - open_).abs()
@@ -93,7 +102,7 @@ def _dna_encode(df: pd.DataFrame) -> pd.Series:
     return codes
 
 
-def _regime_consensus(df: pd.DataFrame) -> pd.Series:
+def _regime_consensus(df: pd.DataFrame, scale: float = 1.0) -> pd.Series:
     """
     Consensus regime from multiple methods.
     Returns: 'TREND', 'RANGE', 'CHAOS', 'UNKNOWN'
@@ -113,8 +122,9 @@ def _regime_consensus(df: pd.DataFrame) -> pd.Series:
         votes['phase_chaos'] = (df['phase_regime'] == -1).astype(int)
 
     if 'entropy_20' in df.columns:
-        votes['ent_order'] = (df['entropy_20'] < df['entropy_20'].rolling(50).mean() * 0.8).astype(int)
-        votes['ent_chaos'] = (df['entropy_20'] > df['entropy_20'].rolling(50).mean() * 1.2).astype(int)
+        _w = sp(50, scale)
+        votes['ent_order'] = (df['entropy_20'] < df['entropy_20'].rolling(_w).mean() * 0.8).astype(int)
+        votes['ent_chaos'] = (df['entropy_20'] > df['entropy_20'].rolling(_w).mean() * 1.2).astype(int)
 
     trend_votes = sum(votes[c] for c in votes.columns if 'trend' in c)
     range_votes = sum(votes[c] for c in votes.columns if 'range' in c)
@@ -152,7 +162,7 @@ def _trend_score(df: pd.DataFrame) -> pd.Series:
     return score.clip(-10, 10)
 
 
-def _momentum_score(df: pd.DataFrame) -> pd.Series:
+def _momentum_score(df: pd.DataFrame, scale: float = 1.0) -> pd.Series:
     """Composite momentum score from -10 to +10."""
     score = pd.Series(0.0, index=df.index)
 
@@ -160,7 +170,7 @@ def _momentum_score(df: pd.DataFrame) -> pd.Series:
         score += (df['rsi_14'] - 50) / 10  # -5 to +5
 
     if 'macd_hist' in df.columns:
-        macd_std = df['macd_hist'].rolling(50).std()
+        macd_std = df['macd_hist'].rolling(sp(50, scale)).std()
         score += (df['macd_hist'] / (macd_std + 1e-10)).clip(-3, 3)
 
     if 'stoch_k' in df.columns:
@@ -172,7 +182,7 @@ def _momentum_score(df: pd.DataFrame) -> pd.Series:
     return score.clip(-10, 10)
 
 
-def _move_readiness(df: pd.DataFrame) -> pd.Series:
+def _move_readiness(df: pd.DataFrame, scale: float = 1.0) -> pd.Series:
     """
     How coiled is the market? Higher score = more energy ready to release.
     Combines: squeeze, entropy compression, low volume, CCT, Hurst approaching 0.5.
@@ -187,7 +197,8 @@ def _move_readiness(df: pd.DataFrame) -> pd.Series:
         score += df['entropy_squeeze'].astype(float) * 2
 
     if 'cct' in df.columns:
-        cct_z = (df['cct'] - df['cct'].rolling(50).mean()) / (df['cct'].rolling(50).std() + 1e-10)
+        _w = sp(50, scale)
+        cct_z = (df['cct'] - df['cct'].rolling(_w).mean()) / (df['cct'].rolling(_w).std() + 1e-10)
         score += cct_z.clip(0, 2)
 
     if 'volume_dry_up' in df.columns:

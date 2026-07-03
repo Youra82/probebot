@@ -152,8 +152,13 @@ def main():
 
     loader = DataLoader(exchange_id=exchange, secret_path=str(SECRET_PATH))
     db = ForensicsDB()
-    miner = PatternMiner(db, lookback=settings.get('lookback_candles', 10), verbose=not quiet)
-    correlator = Correlator(db, lookback=5, verbose=not quiet)
+    _miner_lb = _scale_lookback(settings.get('lookback_candles', 10), timeframe)
+    _corr_lb  = _scale_lookback(5, timeframe)
+    if not quiet and (_miner_lb != settings.get('lookback_candles', 10) or _corr_lb != 5):
+        print(f"  Lookback timeframe-skaliert: Miner {settings.get('lookback_candles', 10)}→{_miner_lb} Kerzen, "
+              f"Correlator 5→{_corr_lb} Kerzen (Ziel: gleiche reale Zeitspanne wie bei 1h)")
+    miner = PatternMiner(db, lookback=_miner_lb, verbose=not quiet)
+    correlator = Correlator(db, lookback=_corr_lb, verbose=not quiet)
     drill_engine = DrillDownEngine(loader, timeframe_chain=['1d'] + drill_tfs, verbose=not quiet)
 
     # ─── [1] Load data ───────────────────────────────────────────────────────
@@ -201,41 +206,18 @@ def main():
         elif _gap_ratio > 2:
             print(f"  ⚠️  Daten-Warnung: Max-Lücke {_gap_ratio:.0f}× größer als erwartet")
 
-    # ─── [2] Compute features ────────────────────────────────────────────────
-    _status("[2/6] Berechne Features...") if quiet else print(f"\n[2/6] Computing features ({len(df_raw)} candles)...")
-    df = compute_all_features(df_raw, verbose=not quiet)
-    if not quiet:
-        print(f"  {len(df.columns)} feature columns computed")
+    # ─── [2-4b] Perioden-Kandidatensuche: mehrere Feature-Skalierungen testen ──
+    # Statt EINER linear von 1h abgeleiteten Periode (die z.B. den BTC-2h-Edge
+    # zerstoert hat) werden mehrere Kandidaten-Multiplikatoren komplett
+    # durchgerechnet (Features -> Bewegungen -> Korrelation -> OOS-Validierung)
+    # und der OOS-staerkste gewinnt. Kein Blick auf die 30% Testdaten waehrend
+    # der Kandidatenauswahl selbst passiert per Kandidat exakt wie bisher.
+    _status("[2/6] Berechne Features (Perioden-Kandidaten)...") if quiet else \
+        print(f"\n[2/6] Computing features ({len(df_raw)} candles, Perioden-Kandidatensuche)...")
 
-    # Save processed df to parquet so optimizer/show_results can load without re-fetching
-    _data_dir = ROOT / 'artifacts' / 'data'
-    _data_dir.mkdir(parents=True, exist_ok=True)
-    _sym_safe = symbol.replace('/', '_').replace(':', '_')
-    _data_path = _data_dir / f'data_{_sym_safe}_{timeframe}.parquet'
-    df.to_parquet(str(_data_path), index=False)
-    if not quiet:
-        print(f"  Data cached: {_data_path.name}")
-
-    # ─── [3] Detect movements ────────────────────────────────────────────────
-    _status("[3/6] Erkenne Bewegungen...") if quiet else print(f"\n[3/6] Detecting movements...")
-
-    # Berechne Ziel-Events aus tatsächlicher Datenzeitspanne
-    # (Bitget limitiert 1h auf ~5200 Kerzen — CLI-Args können weiter zurückreichen)
     from datetime import datetime as _dt
-    try:
-        _actual_ts0 = df['timestamp'].iloc[0]
-        _actual_ts1 = df['timestamp'].iloc[-1]
-        _years_pre = max((_actual_ts1 - _actual_ts0).total_seconds() / (365.25 * 86400), 0.1)
-    except Exception:
-        _years_pre = 1.0
-    _target_epy = _target_events_per_year(timeframe)
-    _min_events_needed = int(_target_epy * _years_pre)
-    if not quiet:
-        print(f"  Daten: {str(df['timestamp'].iloc[0])[:10]} → {str(df['timestamp'].iloc[-1])[:10]} "
-              f"({len(df)} Kerzen, {_years_pre:.2f}J) → Ziel ≥{_min_events_needed} Events")
+    from probebot.forensics.validator import OutOfSampleValidator
 
-    # Timeframe-adaptive Detector-Parameter
-    # Je kürzer der TF, desto strenger die Strukturkriterien (sonst Rauschen)
     _tf_params = {
         '1w':  dict(breakout_bars=10, reversal_min_run=3),
         '3d':  dict(breakout_bars=12, reversal_min_run=3),
@@ -251,62 +233,118 @@ def main():
         '1m':  dict(breakout_bars=120, reversal_min_run=30),
     }
     _tf_p = _tf_params.get(timeframe, dict(breakout_bars=20, reversal_min_run=5))
-
-    # Adaptiver atr_impulse: senkt Sensitivität wenn Detector zu wenige Events findet
-    _atr_steps = [settings.get('atr_multiplier', 1.5), 1.2, 1.0, 0.75, 0.5]
-    _used_atr = _atr_steps[0]
-    all_movements = []
-    for _atr_try in _atr_steps:
-        _det = MovementDetector(
-            atr_impulse=_atr_try,
-            breakout_bars=_tf_p['breakout_bars'],
-            reversal_min_run=_tf_p['reversal_min_run'],
-        )
-        _mvs = _det.detect(df)
-        if movement_types:
-            _mvs = [m for m in _mvs if m.move_type in movement_types]
-        all_movements = _mvs
-        _used_atr = _atr_try
-        if len(all_movements) >= _min_events_needed:
-            break
-        if _atr_try != _atr_steps[-1] and not quiet:
-            print(f"  atr_impulse={_atr_try}: {len(all_movements)} Events < Ziel {_min_events_needed} → senke auf {_atr_steps[_atr_steps.index(_atr_try)+1]}")
-
-    if not quiet:
-        print(f"  Detector: atr_impulse={_used_atr}, breakout={_tf_p['breakout_bars']}b, "
-              f"reversal={_tf_p['reversal_min_run']}c → {len(all_movements)} Events")
-
-    # Auto-Kalibrierung: optimalen min_move_pct für diesen Coin + Zeitraum finden
-    # Nur expliziter CLI-Wert zählt als "manuell" — settings.json-Wert wird überschrieben
+    _target_epy = _target_events_per_year(timeframe)
     _user_set_threshold = args.min_move_pct is not None
-    if not _user_set_threshold:
-        # Tatsächliche Daten-Zeitspanne (nicht CLI-Args) — Bitget limitiert 1h auf ~5200 Kerzen
-        _actual_start = str(df['timestamp'].iloc[0])[:10]
-        _actual_end   = str(df['timestamp'].iloc[-1])[:10]
-        min_move_pct, _median_atr, _min_total, _years, _calib = _auto_calibrate_min_move(
-            df, all_movements, start_date=_actual_start, end_date=_actual_end,
-            events_per_year=_target_epy,
-        )
-        _chosen_n = next((n for t, n in _calib if t == min_move_pct), 0)
-        _label = _best_calib_label(_chosen_n, _min_total)
-        if not quiet:
-            print(f"  Auto-Kalibrierung (Median ATR={_median_atr:.2f}%, "
-                  f"Zeitraum={_years:.1f}J, Ziel ≥{_min_total} Events):")
-            for _t, _n in _calib:
-                _marker = '→' if _t == min_move_pct else ' '
-                _flag = ' ✓' if _n >= _min_total else ''
-                print(f"  {_marker} {_t:.2f}%: {_n:4d} Events{_flag}")
-            print(f"  Gewählt: min_move_pct = {min_move_pct}%  [{_label}]")
-    elif not quiet:
-        print(f"  min_move_pct = {min_move_pct}% (manuell)")
 
-    movements = [m for m in all_movements if abs(m.magnitude_pct) >= min_move_pct]
+    def _run_candidate(scale_mult: float) -> dict:
+        """Rechnet einen Perioden-Kandidaten komplett durch, ohne Ausgabe."""
+        _df = compute_all_features(df_raw, verbose=False, timeframe=timeframe, scale_multiplier=scale_mult)
+
+        try:
+            _ts0 = _df['timestamp'].iloc[0]
+            _ts1 = _df['timestamp'].iloc[-1]
+            _yrs_pre = max((_ts1 - _ts0).total_seconds() / (365.25 * 86400), 0.1)
+        except Exception:
+            _yrs_pre = 1.0
+        _min_events_needed = int(_target_epy * _yrs_pre)
+
+        _atr_steps = [settings.get('atr_multiplier', 1.5), 1.2, 1.0, 0.75, 0.5]
+        _used_atr = _atr_steps[0]
+        _all_mvs = []
+        for _atr_try in _atr_steps:
+            _det = MovementDetector(
+                atr_impulse=_atr_try,
+                breakout_bars=_tf_p['breakout_bars'],
+                reversal_min_run=_tf_p['reversal_min_run'],
+            )
+            _mvs = _det.detect(_df)
+            if movement_types:
+                _mvs = [m for m in _mvs if m.move_type in movement_types]
+            _all_mvs = _mvs
+            _used_atr = _atr_try
+            if len(_all_mvs) >= _min_events_needed:
+                break
+
+        if not _user_set_threshold:
+            _actual_start = str(_df['timestamp'].iloc[0])[:10]
+            _actual_end   = str(_df['timestamp'].iloc[-1])[:10]
+            _min_move, _median_atr, _min_total, _yrs2, _calib = _auto_calibrate_min_move(
+                _df, _all_mvs, start_date=_actual_start, end_date=_actual_end,
+                events_per_year=_target_epy,
+            )
+        else:
+            _min_move = min_move_pct
+            _median_atr = _min_total = _yrs2 = 0
+            _calib = []
+
+        _mvts = [m for m in _all_mvs if abs(m.magnitude_pct) >= _min_move]
+        _result = {
+            'scale_mult': scale_mult, 'used_atr': _used_atr, 'min_move_pct': _min_move,
+            'median_atr': _median_atr, 'min_total': _min_total, 'years': _yrs2, 'calib': _calib,
+            'df': _df, 'movements': _mvts, 'score': (0, 0.0), 'ok': False,
+        }
+        if len(_mvts) < 5:
+            return _result
+
+        _split_idx  = int(len(_df) * 0.70)
+        _split_date = str(_df.iloc[_split_idx].get('timestamp', _df.index[_split_idx]))[:10]
+        _df_train   = _df.iloc[:_split_idx].copy()
+        _mv_train   = [m for m in _mvts if m.idx < _split_idx]
+        _mv_test    = [m for m in _mvts if m.idx >= _split_idx]
+        result_extra = {'split_idx': _split_idx, 'split_date': _split_date,
+                         'df_train': _df_train, 'movements_train': _mv_train, 'movements_test': _mv_test}
+        _result.update(result_extra)
+        if len(_mv_train) < 5:
+            return _result
+
+        _all_types = list({m.move_type for m in _mv_train})
+        _corr, _corr_meta = correlator.analyze(_df_train, _mv_train, symbol, timeframe, move_types=_all_types)
+
+        _clusters = {}
+        if len(_mv_train) >= 4:
+            _clusters = correlator.cluster_movements(_df_train, _mv_train, n_clusters=min(4, len(_mv_train) // 2))
+
+        _val_results = {}
+        if _mv_test and _corr:
+            _validator = OutOfSampleValidator(
+                lookback=_scale_lookback(3, timeframe),
+                signal_window=_scale_lookback(2, timeframe),
+            )
+            _val_results = _validator.validate(_df, _split_idx, _mv_test, _corr)
+            for _mt, _vr in _val_results.items():
+                _vr['n_train'] = sum(1 for m in _mv_train if m.move_type == _mt)
+
+        _usable = [vr for vr in _val_results.values()
+                   if vr['reliability']['label'] in ('ROBUST', 'STABIL') and vr.get('n_train', 0) >= 20]
+        _best_prec = max((vr.get('precision_pct', 0) for vr in _usable), default=0.0)
+        _result.update({
+            'correlations': _corr, 'correlations_meta': _corr_meta, 'clusters': _clusters,
+            'validation_results': _val_results, 'score': (len(_usable), _best_prec), 'ok': True,
+        })
+        return _result
+
+    _candidates = []
+    for _i, _sm in enumerate(_PERIOD_SCALE_CANDIDATES):
+        if quiet:
+            _status(f"[2/6] Perioden-Kandidat {_i + 1}/{len(_PERIOD_SCALE_CANDIDATES)} ({_sm}x)...")
+        _candidates.append(_run_candidate(_sm))
+
+    _winner = max(_candidates, key=lambda c: (c['score'], -abs(c['scale_mult'] - 1.0)))
+
     if not quiet:
-        print(f"  Detected {len(movements)} movements (≥{min_move_pct}%)")
+        _cand_str = ', '.join(f"{c['scale_mult']}x→{c['score'][0]}" for c in _candidates)
+        print(f"  Perioden-Kandidaten (Typen brauchbar): {_cand_str}  →  gewählt: {_winner['scale_mult']}x")
+
+    df = _winner['df']
+    movements = _winner['movements']
+    min_move_pct = _winner['min_move_pct']
+
+    if not quiet:
+        print(f"  Detected {len(movements)} movements (≥{min_move_pct}%)  [Perioden-Skalierung: {_winner['scale_mult']}x]")
         rpt.print_header(symbol, timeframe, start_date, end_date, len(movements))
         rpt.print_movement_summary(movements)
     else:
-        _status(f"[3/6] {len(movements)} Bewegungen (≥{min_move_pct}%)")
+        _status(f"[3/6] {len(movements)} Bewegungen (≥{min_move_pct}%, {_winner['scale_mult']}x)")
 
     if not movements:
         msg = f"⚠️ Keine signifikanten Bewegungen ≥{min_move_pct}% gefunden.\nTimeframe: {timeframe} | Symbol: {symbol}"
@@ -318,25 +356,8 @@ def main():
         db.close()
         return
 
-    # ─── STRICT 70/30 TRAIN/TEST SPLIT ──────────────────────────────────────
-    # KRITISCH: Die 30% Test-Daten sind für den Lernalgorithmus vollständig unsichtbar.
-    # Nur die 70% Training-Daten fließen in Mining, Korrelation und Clustering.
-    split_idx  = int(len(df) * 0.70)
-    split_date = str(df.iloc[split_idx].get('timestamp', df.index[split_idx]))[:10]
-
-    df_train        = df.iloc[:split_idx].copy()   # Lernen NUR auf diesen Daten
-    # df_test       = df.iloc[split_idx:].copy()   # Für Validierung — bleibt unberührt
-
-    movements_train = [m for m in movements if m.idx < split_idx]
-    movements_test  = [m for m in movements if m.idx >= split_idx]
-
-    if not quiet:
-        print(f"\n  Datentrennung (70% / 30%): Split bei {split_date}")
-        print(f"  TRAINING  [{start_date} → {split_date}]: {len(movements_train)} Bewegungen")
-        print(f"  TEST      [{split_date} → {end_date}]:   {len(movements_test)} Bewegungen  ← UNSICHTBAR für Lernen")
-
-    if len(movements_train) < 5:
-        msg = f"⚠️ Zu wenige Trainings-Bewegungen ({len(movements_train)}). Bitte längeren Zeitraum oder kleineren min_move_pct wählen."
+    if not _winner['ok']:
+        msg = f"⚠️ Zu wenige Trainings-Bewegungen. Bitte längeren Zeitraum oder kleineren min_move_pct wählen."
         if quiet:
             _status(msg, final=True)
         else:
@@ -345,43 +366,37 @@ def main():
         db.close()
         return
 
-    # ─── [4] Mine patterns + correlations (NUR Training-Daten!) ──────────────
-    _status(f"[4/6] Mining & Korrelation ({len(movements_train)} Events)...") if quiet else \
-        print(f"\n[4/6] Mining patterns & correlations (NUR 70% Training: {len(movements_train)} Events)...")
-    miner.mine_movements(df_train, movements_train, symbol, timeframe, clear_existing=args.clear)
-    all_move_types = list({m.move_type for m in movements_train})
-    correlations, correlations_meta = correlator.analyze(
-        df_train, movements_train, symbol, timeframe, move_types=all_move_types
-    )
-    if not quiet:
-        rpt.print_correlations(correlations, top_n=top_n)
+    split_idx        = _winner['split_idx']
+    split_date        = _winner['split_date']
+    df_train          = _winner['df_train']
+    movements_train    = _winner['movements_train']
+    movements_test    = _winner['movements_test']
+    correlations       = _winner['correlations']
+    correlations_meta = _winner['correlations_meta']
+    clusters           = _winner['clusters']
+    validation_results = _winner['validation_results']
 
-    clusters = {}
-    if len(movements_train) >= 4:
-        clusters = correlator.cluster_movements(df_train, movements_train, n_clusters=min(4, len(movements_train) // 2))
-        if not quiet:
+    if not quiet:
+        print(f"\n  Datentrennung (70% / 30%): Split bei {split_date}")
+        print(f"  TRAINING  [{start_date} → {split_date}]: {len(movements_train)} Bewegungen")
+        print(f"  TEST      [{split_date} → {end_date}]:   {len(movements_test)} Bewegungen  ← UNSICHTBAR für Lernen")
+        rpt.print_correlations(correlations, top_n=top_n)
+        if clusters:
             rpt.print_clusters(clusters)
 
-    # ─── [4b] Out-of-Sample Validierung (Test-Daten — Bot hat diese NIE gesehen) ──
-    from probebot.forensics.validator import OutOfSampleValidator
-    validation_results = {}
-    robust_cnt = bot_cnt = 0
-    if movements_test and correlations:
-        _status("[4b] OOS-Validierung...") if quiet else \
+    # DB-Schreiben (Pattern-Mining) nur fuer den Gewinner-Kandidaten
+    miner.mine_movements(df_train, movements_train, symbol, timeframe, clear_existing=args.clear)
+
+    # ─── OOS-Zusammenfassung ausgeben ────────────────────────────────────────
+    robust_cnt = sum(1 for vr in validation_results.values()
+                      if vr['reliability']['label'] in ('ROBUST', 'STABIL'))
+    bot_cnt    = sum(1 for vr in validation_results.values()
+                      if vr['reliability']['label'] in ('ROBUST', 'STABIL')
+                      and vr.get('precision_pct', 0) >= 10
+                      and vr.get('n_train', 0) >= 20)
+    if not quiet:
+        if validation_results:
             print(f"\n[4b] Out-of-Sample Validierung ({len(movements_test)} Test-Events ab {split_date})...")
-        validator = OutOfSampleValidator(lookback=3, signal_window=2)
-        validation_results = validator.validate(df, split_idx, movements_test, correlations)
-        # Trainings-Anzahl nachträglich eintragen
-        for mtype, vr in validation_results.items():
-            vr['n_train'] = sum(1 for m in movements_train if m.move_type == mtype)
-        # Zusammenfassung ausgeben
-        robust_cnt  = sum(1 for vr in validation_results.values()
-                          if vr['reliability']['label'] in ('ROBUST', 'STABIL'))
-        bot_cnt     = sum(1 for vr in validation_results.values()
-                          if vr['reliability']['label'] in ('ROBUST', 'STABIL')
-                          and vr.get('precision_pct', 0) >= 10
-                          and vr.get('n_train', 0) >= 20)
-        if not quiet:
             print(f"  OOS Validierung: {robust_cnt}/{len(validation_results)} ROBUST/STABIL  →  {bot_cnt} für Bot verwendbar")
             for mtype, vr in sorted(validation_results.items()):
                 n_tr   = vr.get('n_train', 0)
@@ -396,8 +411,17 @@ def main():
                     suffix = ""
                 print(f"    {icon} {mtype:<28} n={n_tr:3d}  In-Sample: {vr['insample_hit']:3d}%  "
                       f"OOS-Recall: {vr['recall_pct']:3d}%  OOS-Precision: {prec:3d}%  [{label}]{suffix}")
-    elif not quiet:
-        print(f"\n[4b] OOS-Validierung übersprungen (keine Test-Events)")
+        else:
+            print(f"\n[4b] OOS-Validierung übersprungen (keine Test-Events)")
+
+    # Feature-Cache erst jetzt speichern (Gewinner-Kandidat, nicht jeder Versuch)
+    _data_dir = ROOT / 'artifacts' / 'data'
+    _data_dir.mkdir(parents=True, exist_ok=True)
+    _sym_safe = symbol.replace('/', '_').replace(':', '_')
+    _data_path = _data_dir / f'data_{_sym_safe}_{timeframe}.parquet'
+    df.to_parquet(str(_data_path), index=False)
+    if not quiet:
+        print(f"  Data cached: {_data_path.name}")
 
     # ─── Strategy selection ──────────────────────────────────────────────────
     from probebot.analysis.strategy_selector import select_strategy as _sel_strategy
@@ -523,6 +547,7 @@ def main():
         selected_strategy=_selected_strategy_info,
         split_date=split_date,
         split_idx=split_idx,
+        feature_scale_multiplier=_winner['scale_mult'],
     )
     if not quiet:
         print(f"  Bot-Spec saved: {spec_path}")
@@ -717,6 +742,15 @@ def _run_live(
 
 _MIN_EVENTS_PER_YEAR = 300  # Baseline, kalibriert an 1h (300 von ~8760 Kerzen/Jahr = 3.4%)
 
+# Kleine, diskrete Kandidaten-Auswahl fuer die Feature-Perioden-Skalierung.
+# Statt EINER linear von 1h abgeleiteten Periode (die z.B. den BTC-2h-Edge
+# zerstoert hat) werden diese Multiplikatoren obendrauf auf den
+# Timeframe-Skalierungsfaktor angewendet und per OOS-Validierung verglichen —
+# bewusst klein gehalten (5 statt kontinuierlich), um Rechenzeit und
+# Overfitting-Risiko (mehr durchsuchte Parameter = mehr Zufallstreffer) in
+# Grenzen zu halten.
+_PERIOD_SCALE_CANDIDATES = [0.5, 0.75, 1.0, 1.5, 2.0]
+
 _TF_MINUTES_FOR_TARGET = {
     '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30,
     '1h': 60, '2h': 120, '4h': 240, '6h': 360, '12h': 720,
@@ -737,6 +771,25 @@ def _target_events_per_year(timeframe: str) -> float:
     baseline_candles_per_year = (365.25 * 1440) / 60  # 1h
     fraction = _MIN_EVENTS_PER_YEAR / baseline_candles_per_year
     return max(20.0, candles_per_year * fraction)
+
+
+def _scale_lookback(target_candles_at_1h: int, timeframe: str) -> int:
+    """
+    Skaliert ein Lookback-/Signal-Fenster (in Kerzen) so, dass es ueber alle
+    Timeframes ungefaehr dieselbe REALE Zeitspanne abdeckt wie bei 1h.
+
+    Ohne diese Skalierung nutzen Correlator/PatternMiner/OutOfSampleValidator
+    feste Kerzen-Anzahlen (z.B. lookback=5) unabhaengig vom Timeframe — bei 1h
+    sind das 5 Echtstunden Vorlauf-Fenster, bei 6h werden aus denselben "5
+    Kerzen" ploetzlich 30 Echtstunden (1,25 Tage). Der eigentliche, schnell
+    wirkende Ausloeser einer Bewegung (z.B. ein Volumen-Spike 3 Stunden vorher)
+    verschwindet dann im Rauschen eines viel zu breiten Fensters. Minimum 1
+    Kerze (mehr Aufloesung als eine Kerze ist nicht moeglich).
+    """
+    minutes = _TF_MINUTES_FOR_TARGET.get(timeframe, 60)
+    target_hours = target_candles_at_1h * 1.0  # 1h-Kerze = 1 Stunde (Baseline)
+    tf_hours = minutes / 60.0
+    return max(1, round(target_hours / tf_hours))
 
 
 def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct',
@@ -783,15 +836,6 @@ def _auto_calibrate_min_move(df, all_movements, atr_col='atr_pct',
         best_threshold = results[0][0] if results else 0.5
 
     return best_threshold, median_atr, min_total, years, results
-
-
-def _best_calib_label(total, min_total):
-    ratio = total / min_total if min_total else 1
-    if ratio >= 1.0:
-        return 'OK'
-    if ratio >= 0.7:
-        return 'KNAPP'
-    return 'ZU WENIG DATEN'
 
 
 def _fmt(val) -> str:

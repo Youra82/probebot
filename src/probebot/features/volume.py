@@ -2,25 +2,30 @@
 import numpy as np
 import pandas as pd
 
+from .scaling import sp
 
-def add_all_volume(df: pd.DataFrame) -> pd.DataFrame:
+
+def add_all_volume(df: pd.DataFrame, scale: float = 1.0) -> pd.DataFrame:
+    """scale: siehe technical.add_all_technical — skaliert alle Fenster/Lags."""
     df = df.copy()
 
     # OBV (On-Balance Volume)
     df['obv'] = _obv(df)
-    df['obv_slope'] = df['obv'].diff(5)
-    df['obv_z'] = (df['obv'] - df['obv'].rolling(20).mean()) / (df['obv'].rolling(20).std() + 1e-10)
+    df['obv_slope'] = df['obv'].diff(sp(5, scale))
+    _obv_w = sp(20, scale)
+    df['obv_z'] = (df['obv'] - df['obv'].rolling(_obv_w).mean()) / (df['obv'].rolling(_obv_w).std() + 1e-10)
 
     # Volume ratio vs moving average
-    vol_ma = df['volume'].rolling(20).mean()
+    _vma_w = sp(20, scale)
+    vol_ma = df['volume'].rolling(_vma_w).mean()
     df['volume_ratio'] = df['volume'] / (vol_ma + 1e-10)
-    df['volume_z'] = (df['volume'] - vol_ma) / (df['volume'].rolling(20).std() + 1e-10)
+    df['volume_z'] = (df['volume'] - vol_ma) / (df['volume'].rolling(_vma_w).std() + 1e-10)
 
     # Volume surge detection
     df['volume_surge'] = (df['volume_ratio'] > 2.0).astype(float)
     df['volume_dry_up'] = (df['volume_ratio'] < 0.5).astype(float)
 
-    # Consecutive declining volume
+    # Consecutive declining volume (strukturelles 3-Kerzen-Muster, nicht timeframe-skaliert)
     df['vol_declining_3'] = (
         (df['volume'] < df['volume'].shift(1)) &
         (df['volume'].shift(1) < df['volume'].shift(2)) &
@@ -31,30 +36,31 @@ def add_all_volume(df: pd.DataFrame) -> pd.DataFrame:
     # Positive volume = buy (close > open), negative = sell
     delta = df['volume'] * np.sign(df['close'] - df['open'])
     df['cvd'] = delta.cumsum()
-    df['cvd_slope'] = df['cvd'].diff(5)
-    df['cvd_divergence'] = _divergence(df['close'], df['cvd'], 5)
+    df['cvd_slope'] = df['cvd'].diff(sp(5, scale))
+    df['cvd_divergence'] = _divergence(df['close'], df['cvd'], sp(5, scale))
 
     # Volume-weighted price move (is volume confirming direction?)
     df['vol_confirm'] = np.sign(df['close'] - df['open']) * df['volume_ratio']
 
     # Volume entropy (how randomly distributed is volume across sessions?)
-    df['volume_entropy'] = _rolling_entropy(df['volume'], 20)
+    df['volume_entropy'] = _rolling_entropy(df['volume'], sp(20, scale))
 
     # Volume profile: price level with most volume in last N candles
     for n in [20, 50]:
-        df[f'vol_poc_{n}'] = _rolling_poc(df, n)  # Point of Control
+        ns = sp(n, scale)
+        df[f'vol_poc_{n}'] = _rolling_poc(df, ns)  # Point of Control
         df[f'price_vs_poc_{n}'] = (df['close'] - df[f'vol_poc_{n}']) / (df[f'vol_poc_{n}'] + 1e-10)
 
     # MFI divergence
     if 'mfi_14' in df.columns:
-        df['mfi_divergence'] = _divergence(df['close'], df['mfi_14'], 5)
+        df['mfi_divergence'] = _divergence(df['close'], df['mfi_14'], sp(5, scale))
 
     # Buying pressure vs selling pressure (high-low midpoint method)
     mid = (df['high'] + df['low']) / 2
     df['buy_pressure'] = df['volume'] * ((df['close'] - df['low']) / (df['high'] - df['low'] + 1e-10))
     df['sell_pressure'] = df['volume'] * ((df['high'] - df['close']) / (df['high'] - df['low'] + 1e-10))
     df['pressure_ratio'] = df['buy_pressure'] / (df['sell_pressure'] + 1e-10)
-    df['cum_pressure_slope'] = (df['buy_pressure'] - df['sell_pressure']).rolling(10).sum()
+    df['cum_pressure_slope'] = (df['buy_pressure'] - df['sell_pressure']).rolling(sp(10, scale)).sum()
 
     # Large candle + large volume = institutional candle
     body = (df['close'] - df['open']).abs()
@@ -65,8 +71,8 @@ def add_all_volume(df: pd.DataFrame) -> pd.DataFrame:
     ).astype(float)
 
     # Volume slope (trend)
-    df['vol_slope_5'] = df['volume'].diff(5)
-    df['vol_slope_10'] = df['volume'].diff(10)
+    df['vol_slope_5'] = df['volume'].diff(sp(5, scale))
+    df['vol_slope_10'] = df['volume'].diff(sp(10, scale))
 
     return df
 

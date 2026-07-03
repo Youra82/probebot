@@ -7,10 +7,13 @@ import numpy as np
 import pandas as pd
 from scipy.signal import hilbert
 
+from .scaling import sp
+
 
 # ─── Public entry point ───────────────────────────────────────────────────────
 
-def add_all_physics(df: pd.DataFrame) -> pd.DataFrame:
+def add_all_physics(df: pd.DataFrame, scale: float = 1.0) -> pd.DataFrame:
+    """scale: siehe technical.add_all_technical — skaliert alle Fenster/Lags."""
     df = df.copy()
     close = df['close']
     log_ret = np.log(close / close.shift(1))
@@ -23,30 +26,32 @@ def add_all_physics(df: pd.DataFrame) -> pd.DataFrame:
 
     # Shannon Entropy (multiple windows)
     for w in [10, 20, 40]:
-        df[f'entropy_{w}'] = _rolling_entropy(log_ret, w)
+        df[f'entropy_{w}'] = _rolling_entropy(log_ret, sp(w, scale))
 
     # Hurst Exponent (R/S analysis, multiple windows)
     for w in [30, 60, 100]:
-        df[f'hurst_{w}'] = _rolling_hurst(close, w)
+        df[f'hurst_{w}'] = _rolling_hurst(close, sp(w, scale))
 
     # Higuchi Fractal Dimension
-    df['higuchi_fd'] = _rolling_higuchi(close, window=30, kmax=6)
+    df['higuchi_fd'] = _rolling_higuchi(close, window=sp(30, scale), kmax=6)
 
     # DFA alpha (Detrended Fluctuation Analysis)
-    df['dfa_alpha'] = _rolling_dfa(log_ret, window=60)
+    df['dfa_alpha'] = _rolling_dfa(log_ret, window=sp(60, scale))
 
     # Kalman velocity estimate
     df['kalman_vel'] = _kalman_velocity(close)
 
     # Autocorrelation at lags 1, 5, 10
+    _ac_window = sp(20, scale)
     for lag in [1, 5, 10]:
-        df[f'autocorr_{lag}'] = log_ret.rolling(20).apply(
-            lambda x: pd.Series(x).autocorr(lag=lag) if len(x) > lag else np.nan,
+        lag_s = sp(lag, scale, minimum=1)
+        df[f'autocorr_{lag}'] = log_ret.rolling(_ac_window).apply(
+            lambda x, lag_s=lag_s: pd.Series(x).autocorr(lag=lag_s) if len(x) > lag_s else np.nan,
             raw=False
         )
 
     # Variance Ratio (Lo & MacKinlay) — mean reversion detector
-    df['variance_ratio'] = _rolling_variance_ratio(log_ret, window=40, q=4)
+    df['variance_ratio'] = _rolling_variance_ratio(log_ret, window=sp(40, scale), q=sp(4, scale, minimum=2))
 
     # Wick Pressure Imbalance (oraclebot/dbot)
     df['wpi'] = _wick_pressure_imbalance(df)
@@ -55,33 +60,34 @@ def add_all_physics(df: pd.DataFrame) -> pd.DataFrame:
     df['memory_pressure'] = _memory_pressure(df['wpi'], decay=0.9)
 
     # Candle Compression Tension
-    df['cct'] = _candle_compression_tension(df)
+    df['cct'] = _candle_compression_tension(df, window=sp(10, scale))
 
     # FFT dominant period (mbot-style cycle detection)
-    df['fft_dominant_period'] = _rolling_fft_period(close, window=64)
+    df['fft_dominant_period'] = _rolling_fft_period(close, window=sp(64, scale))
 
     # Hilbert Transform Phase (flowbot-style)
-    df['hilbert_phase'] = _rolling_hilbert_phase(close, window=32)
+    df['hilbert_phase'] = _rolling_hilbert_phase(close, window=sp(32, scale))
     df['hilbert_phase_cos'] = np.cos(df['hilbert_phase'])
     df['hilbert_phase_sin'] = np.sin(df['hilbert_phase'])
 
     # EAR Entropy per candle (zerobot-style)
-    df['ear_entropy'] = _ear_entropy(df)
+    df['ear_entropy'] = _ear_entropy(df, window=sp(10, scale))
 
     # Phase space regime (mbot-style): 1=trend, 0=range, -1=chaos
-    df['phase_regime'] = _phase_regime(df)
+    df['phase_regime'] = _phase_regime(df, window=sp(20, scale))
 
     # Lyapunov exponent approximation
-    df['lyapunov'] = _rolling_lyapunov(close, window=30)
+    df['lyapunov'] = _rolling_lyapunov(close, window=sp(30, scale))
 
     # Normalized energy (kinetic energy proxy, z-score)
-    df['energy_z'] = (df['energy'] - df['energy'].rolling(50).mean()) / (df['energy'].rolling(50).std() + 1e-10)
+    _ez_w = sp(50, scale)
+    df['energy_z'] = (df['energy'] - df['energy'].rolling(_ez_w).mean()) / (df['energy'].rolling(_ez_w).std() + 1e-10)
 
     # Entropy squeeze: entropy below rolling mean (order building up)
-    df['entropy_squeeze'] = (df['entropy_20'] < df['entropy_20'].rolling(50).mean() * 0.8).astype(float)
+    df['entropy_squeeze'] = (df['entropy_20'] < df['entropy_20'].rolling(sp(50, scale)).mean() * 0.8).astype(float)
 
     # Entropy trend: is entropy rising or falling?
-    df['entropy_slope'] = df['entropy_20'].diff(3)
+    df['entropy_slope'] = df['entropy_20'].diff(sp(3, scale, minimum=1))
 
     return df
 
@@ -332,7 +338,7 @@ def _rolling_hilbert_phase(prices: pd.Series, window: int = 32) -> pd.Series:
 
 # ─── EAR Entropy (zerobot-style per-candle) ──────────────────────────────────
 
-def _ear_entropy(df: pd.DataFrame) -> pd.Series:
+def _ear_entropy(df: pd.DataFrame, window: int = 10) -> pd.Series:
     total = df['high'] - df['low']
     p_bull = (df['close'] - df['low']) / (total + 1e-10)
     p_bear = (df['high'] - df['close']) / (total + 1e-10)
@@ -341,20 +347,20 @@ def _ear_entropy(df: pd.DataFrame) -> pd.Series:
         p_bull.clip(1e-10, 1 - 1e-10) * np.log2(p_bull.clip(1e-10, 1 - 1e-10)) +
         p_bear.clip(1e-10, 1 - 1e-10) * np.log2(p_bear.clip(1e-10, 1 - 1e-10))
     )
-    return h.rolling(10).mean()
+    return h.rolling(window).mean()
 
 
 # ─── Phase Space Regime ───────────────────────────────────────────────────────
 
-def _phase_regime(df: pd.DataFrame) -> pd.Series:
+def _phase_regime(df: pd.DataFrame, window: int = 20) -> pd.Series:
     """
     Classify market state using velocity & acceleration (mbot MDEF-style).
     Returns: 1=trend, 0=range, -1=chaos
     """
     vel = df['velocity'] if 'velocity' in df.columns else df['close'].diff()
     acc = vel.diff()
-    vel_z = (vel - vel.rolling(20).mean()) / (vel.rolling(20).std() + 1e-10)
-    acc_z = (acc - acc.rolling(20).mean()) / (acc.rolling(20).std() + 1e-10)
+    vel_z = (vel - vel.rolling(window).mean()) / (vel.rolling(window).std() + 1e-10)
+    acc_z = (acc - acc.rolling(window).mean()) / (acc.rolling(window).std() + 1e-10)
 
     regime = pd.Series(0, index=df.index)
     # Trend: strong velocity, low acceleration change

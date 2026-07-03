@@ -23,6 +23,7 @@ def generate_bot_spec(
     selected_strategy: dict = None,
     split_date: str = None,
     split_idx: int = None,
+    feature_scale_multiplier: float = 1.0,
 ) -> str:
     """Erzeugt strukturierte Bot-Spec JSON und gibt den Pfad zurück."""
 
@@ -36,13 +37,18 @@ def generate_bot_spec(
             'split_date': split_date or '',
             'split_idx': split_idx or 0,
             'n_movements': len(movements),
+            'feature_scale_multiplier': feature_scale_multiplier,
             'oos_validation': 'STRICT 70/30 temporal split — test data never seen by learning algorithms',
             'usage': (
                 'Verwende diese Datei als Grundlage für einen neuen Trading-Bot. '
                 'Die entry_conditions pro Bewegungstyp sind statistisch validierte '
                 'Vorbedingungen (Welch t-Test, p<0.05, 70% Trainingsdaten). '
                 'oos_validation zeigt ob die Signale auf den unsichtbaren 30% standhalten. '
-                'Nur ROBUST/STABIL Signale für den Bot verwenden!'
+                'Nur ROBUST/STABIL Signale für den Bot verwenden! '
+                'WICHTIG: feature_scale_multiplier MUSS beim Live-Feature-Computing '
+                '(compute_all_features(..., scale_multiplier=...)) exakt reproduziert werden — '
+                'sonst rechnet der Live-Bot mit anderen Indikator-Perioden als denen, '
+                'die hier validiert wurden.'
             ),
         },
         'selected_strategy': selected_strategy or {},

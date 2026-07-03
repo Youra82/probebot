@@ -2,16 +2,20 @@
 import numpy as np
 import pandas as pd
 
+from .scaling import sp
 
-def add_all_structure(df: pd.DataFrame) -> pd.DataFrame:
+
+def add_all_structure(df: pd.DataFrame, scale: float = 1.0) -> pd.DataFrame:
+    """scale: siehe technical.add_all_technical — skaliert alle Fenster."""
     df = df.copy()
 
     # Swing highs and lows (pivot detection)
-    df['swing_high'] = _swing_high(df['high'], left=3, right=3)
-    df['swing_low'] = _swing_low(df['low'], left=3, right=3)
+    _sw = sp(3, scale, minimum=1)
+    df['swing_high'] = _swing_high(df['high'], left=_sw, right=_sw)
+    df['swing_low'] = _swing_low(df['low'], left=_sw, right=_sw)
 
     # HH / HL / LL / LH structure
-    market_struct = _market_structure(df)
+    market_struct = _market_structure(df, window=sp(10, scale))
     df['struct_hh'] = market_struct['hh'].astype(float)
     df['struct_hl'] = market_struct['hl'].astype(float)
     df['struct_ll'] = market_struct['ll'].astype(float)
@@ -29,13 +33,13 @@ def add_all_structure(df: pd.DataFrame) -> pd.DataFrame:
     df['in_fvg'] = (fvg['bull'] | fvg['bear']).astype(float)
 
     # Order blocks (last opposing candle before impulse)
-    ob = _order_blocks(df)
+    ob = _order_blocks(df, lookback=sp(5, scale))
     df['bull_ob'] = ob['bull'].astype(float)
     df['bear_ob'] = ob['bear'].astype(float)
 
     # Breakout of consolidation (N-bar range)
     for n in [10, 20]:
-        breakout = _range_breakout(df, n)
+        breakout = _range_breakout(df, sp(n, scale))
         df[f'breakout_up_{n}'] = breakout['up'].astype(float)
         df[f'breakout_down_{n}'] = breakout['down'].astype(float)
 
@@ -45,12 +49,13 @@ def add_all_structure(df: pd.DataFrame) -> pd.DataFrame:
     df['gap_pct'] = (df['open'] - df['close'].shift(1)) / (df['close'].shift(1) + 1e-10)
 
     # Price vs VWAP approximation (rolling)
-    df['vwap_20'] = _rolling_vwap(df, 20)
+    df['vwap_20'] = _rolling_vwap(df, sp(20, scale))
     df['price_vs_vwap'] = (df['close'] - df['vwap_20']) / (df['vwap_20'] + 1e-10)
 
     # Range compression: is current range < N-bar avg?
     for n in [10, 20]:
-        avg_range = (df['high'] - df['low']).rolling(n).mean()
+        ns = sp(n, scale)
+        avg_range = (df['high'] - df['low']).rolling(ns).mean()
         curr_range = df['high'] - df['low']
         df[f'range_compression_{n}'] = (curr_range / (avg_range + 1e-10))
 
@@ -82,9 +87,10 @@ def add_all_structure(df: pd.DataFrame) -> pd.DataFrame:
     df['bull_engulf'] = _bull_engulf(df)
     df['bear_engulf'] = _bear_engulf(df)
 
-    # Price position in 50-bar range
-    high_50 = df['high'].rolling(50).max()
-    low_50 = df['low'].rolling(50).min()
+    # Price position in N-bar range
+    _rp = sp(50, scale)
+    high_50 = df['high'].rolling(_rp).max()
+    low_50 = df['low'].rolling(_rp).min()
     df['range_position_50'] = (df['close'] - low_50) / (high_50 - low_50 + 1e-10)
 
     return df
@@ -112,22 +118,23 @@ def _swing_low(series: pd.Series, left: int = 3, right: int = 3) -> pd.Series:
 
 # ─── Market Structure (HH/HL/LH/LL) ─────────────────────────────────────────
 
-def _market_structure(df: pd.DataFrame) -> dict:
+def _market_structure(df: pd.DataFrame, window: int = 10) -> dict:
     close = df['close'].values
     n = len(close)
+    half = max(1, window // 2)
 
     hh = np.zeros(n, dtype=bool)
     hl = np.zeros(n, dtype=bool)
     ll = np.zeros(n, dtype=bool)
     lh = np.zeros(n, dtype=bool)
 
-    for i in range(10, n):
-        window = close[i - 10:i]
-        prev_high = np.max(window[:-5]) if len(window) >= 5 else np.max(window)
-        prev_low = np.min(window[:-5]) if len(window) >= 5 else np.min(window)
+    for i in range(window, n):
+        w = close[i - window:i]
+        prev_high = np.max(w[:-half]) if len(w) >= half else np.max(w)
+        prev_low = np.min(w[:-half]) if len(w) >= half else np.min(w)
         curr = close[i]
-        p_high = np.max(close[max(0, i - 5):i])
-        p_low = np.min(close[max(0, i - 5):i])
+        p_high = np.max(close[max(0, i - half):i])
+        p_low = np.min(close[max(0, i - half):i])
 
         if p_high > prev_high:
             hh[i] = True
@@ -197,7 +204,7 @@ def _fair_value_gaps(df: pd.DataFrame) -> dict:
 
 # ─── Order Blocks ─────────────────────────────────────────────────────────────
 
-def _order_blocks(df: pd.DataFrame, impulse_threshold: float = 0.015) -> dict:
+def _order_blocks(df: pd.DataFrame, impulse_threshold: float = 0.015, lookback: int = 5) -> dict:
     """
     Detect order blocks: last opposing candle before a strong impulse move.
     Bull OB: last bearish candle before strong bullish impulse.
@@ -213,13 +220,13 @@ def _order_blocks(df: pd.DataFrame, impulse_threshold: float = 0.015) -> dict:
         move = (close[i] - close[i - 1]) / (close[i - 1] + 1e-10)
         if move > impulse_threshold:
             # Bullish impulse - last bearish candle is bull OB
-            for j in range(i - 1, max(i - 5, 0), -1):
+            for j in range(i - 1, max(i - lookback, 0), -1):
                 if close[j] < open_[j]:  # bearish candle
                     bull_ob[j] = True
                     break
         elif move < -impulse_threshold:
             # Bearish impulse - last bullish candle is bear OB
-            for j in range(i - 1, max(i - 5, 0), -1):
+            for j in range(i - 1, max(i - lookback, 0), -1):
                 if close[j] > open_[j]:  # bullish candle
                     bear_ob[j] = True
                     break

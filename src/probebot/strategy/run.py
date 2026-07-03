@@ -81,7 +81,8 @@ def _load_bot_spec(config: dict, symbol: str, timeframe: str) -> dict | None:
 def _compute_signal(symbol: str, timeframe: str,
                     config: dict, entry_conditions: dict,
                     exchange: Exchange,
-                    logger: logging.Logger) -> dict | None:
+                    logger: logging.Logger,
+                    scale_multiplier: float = 1.0) -> dict | None:
     """
     Fetch recent OHLCV → compute 177 features → score all tradeable
     move types → return best signal or None.
@@ -98,7 +99,8 @@ def _compute_signal(symbol: str, timeframe: str,
 
     logger.info(f"Features berechnen ({len(df_closed)} Kerzen)...")
     try:
-        df_feat  = compute_all_features(df_closed, min_candles=100)
+        df_feat  = compute_all_features(df_closed, min_candles=100, timeframe=timeframe,
+                                         scale_multiplier=scale_multiplier)
         last_row = df_feat.iloc[-1].to_dict()
     except Exception as e:
         logger.error(f"Feature-Berechnung fehlgeschlagen: {e}")
@@ -192,6 +194,7 @@ def run_strategy(account: dict, telegram_cfg: dict,
         return
 
     entry_conditions = bot_spec.get('entry_conditions', {})
+    scale_multiplier = bot_spec.get('meta', {}).get('feature_scale_multiplier', 1.0)
     exchange         = Exchange(account)
 
     signal = None
@@ -203,7 +206,8 @@ def run_strategy(account: dict, telegram_cfg: dict,
             logger.info(f"Candle-Cooldown aktiv — ueberspringe Signal-Suche.")
         else:
             signal = _compute_signal(
-                symbol, timeframe, config, entry_conditions, exchange, logger
+                symbol, timeframe, config, entry_conditions, exchange, logger,
+                scale_multiplier=scale_multiplier,
             )
 
     full_trade_cycle(

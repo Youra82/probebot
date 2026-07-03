@@ -59,7 +59,7 @@ class LiveScanner:
             return []
 
         print(f"  [live] Berechne Features...")
-        df = compute_all_features(df_raw, min_candles=50)
+        df = compute_all_features(df_raw, min_candles=50, timeframe=timeframe)
 
         # Alle Bewegungen finden
         all_movements = self.detector.detect(df)

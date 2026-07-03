@@ -2,8 +2,15 @@
 import pandas as pd
 import numpy as np
 
+from .scaling import sp
 
-def add_all_technical(df: pd.DataFrame) -> pd.DataFrame:
+
+def add_all_technical(df: pd.DataFrame, scale: float = 1.0) -> pd.DataFrame:
+    """
+    scale: Faktor aus scaling.timeframe_scale() — skaliert alle Perioden
+    (urspruenglich fuer 1h kalibriert) auf dieselbe reale Zeitspanne bei
+    anderen Timeframes. scale=1.0 (Default, 1h) = unveraendertes Verhalten.
+    """
     df = df.copy()
     close = df['close']
     high = df['high']
@@ -13,15 +20,17 @@ def add_all_technical(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- Moving Averages ---
     for p in [10, 20, 50, 100, 200]:
-        df[f'sma_{p}'] = close.rolling(p).mean()
-        df[f'ema_{p}'] = close.ewm(span=p, adjust=False).mean()
+        ps = sp(p, scale)
+        df[f'sma_{p}'] = close.rolling(ps).mean()
+        df[f'ema_{p}'] = close.ewm(span=ps, adjust=False).mean()
 
-    df['wma_14'] = _wma(close, 14)
-    df['hma_14'] = _hma(close, 14)
+    df['wma_14'] = _wma(close, sp(14, scale))
+    df['hma_14'] = _hma(close, sp(14, scale))
 
     # Distance from EMA (normalized)
     for p in [9, 21, 50, 200]:
-        df[f'ema_{p}'] = close.ewm(span=p, adjust=False).mean()
+        ps = sp(p, scale)
+        df[f'ema_{p}'] = close.ewm(span=ps, adjust=False).mean()
         df[f'dist_ema_{p}'] = (close - df[f'ema_{p}']) / (df[f'ema_{p}'] + 1e-10)
 
     # EMA alignment score (how many EMAs are stacked bullish)
@@ -36,34 +45,35 @@ def add_all_technical(df: pd.DataFrame) -> pd.DataFrame:
     )  # range: -3 (full bear) to +3 (full bull)
 
     # --- RSI variants ---
-    df['rsi_7'] = _rsi(close, 7)
-    df['rsi_14'] = _rsi(close, 14)
-    df['rsi_21'] = _rsi(close, 21)
+    df['rsi_7'] = _rsi(close, sp(7, scale))
+    df['rsi_14'] = _rsi(close, sp(14, scale))
+    df['rsi_21'] = _rsi(close, sp(21, scale))
 
     # RSI divergence (price slope vs RSI slope over 5 candles)
-    df['rsi_divergence'] = _divergence(close, df['rsi_14'], 5)
+    df['rsi_divergence'] = _divergence(close, df['rsi_14'], sp(5, scale))
 
     # --- MACD ---
-    macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    macd_line = close.ewm(span=sp(12, scale), adjust=False).mean() - close.ewm(span=sp(26, scale), adjust=False).mean()
+    signal_line = macd_line.ewm(span=sp(9, scale), adjust=False).mean()
     df['macd'] = macd_line
     df['macd_signal'] = signal_line
     df['macd_hist'] = macd_line - signal_line
     df['macd_hist_slope'] = df['macd_hist'].diff()
 
     # --- Bollinger Bands ---
-    bb_mid = close.rolling(20).mean()
-    bb_std = close.rolling(20).std()
+    _bb_p = sp(20, scale)
+    bb_mid = close.rolling(_bb_p).mean()
+    bb_std = close.rolling(_bb_p).std()
     df['bb_upper'] = bb_mid + 2 * bb_std
     df['bb_lower'] = bb_mid - 2 * bb_std
     df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / (bb_mid + 1e-10)
     df['bb_position'] = (close - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-10)
-    df['bb_squeeze'] = df['bb_width'] < df['bb_width'].rolling(50).mean() * 0.8
+    df['bb_squeeze'] = df['bb_width'] < df['bb_width'].rolling(sp(50, scale)).mean() * 0.8
 
     # --- Keltner Channels ---
-    atr14 = _atr(df, 14)
+    atr14 = _atr(df, sp(14, scale))
     df['atr_14'] = atr14
-    kc_mid = close.ewm(span=20, adjust=False).mean()
+    kc_mid = close.ewm(span=sp(20, scale), adjust=False).mean()
     df['kc_upper'] = kc_mid + 1.5 * atr14
     df['kc_lower'] = kc_mid - 1.5 * atr14
 
@@ -71,64 +81,65 @@ def add_all_technical(df: pd.DataFrame) -> pd.DataFrame:
     df['kc_squeeze'] = (df['bb_upper'] < df['kc_upper']) & (df['bb_lower'] > df['kc_lower'])
 
     # --- ATR variants ---
-    df['atr_7'] = _atr(df, 7)
-    df['atr_14'] = _atr(df, 14)
-    df['atr_21'] = _atr(df, 21)
+    df['atr_7'] = _atr(df, sp(7, scale))
+    df['atr_14'] = _atr(df, sp(14, scale))
+    df['atr_21'] = _atr(df, sp(21, scale))
     df['atr_pct'] = df['atr_14'] / (close + 1e-10)
-    df['atr_z'] = (df['atr_14'] - df['atr_14'].rolling(50).mean()) / (df['atr_14'].rolling(50).std() + 1e-10)
+    df['atr_z'] = (df['atr_14'] - df['atr_14'].rolling(sp(50, scale)).mean()) / (df['atr_14'].rolling(sp(50, scale)).std() + 1e-10)
 
     # --- ADX / DI ---
-    adx_result = _adx(df, 14)
+    adx_result = _adx(df, sp(14, scale))
     df['adx'] = adx_result['adx']
     df['di_plus'] = adx_result['di_plus']
     df['di_minus'] = adx_result['di_minus']
     df['di_delta'] = df['di_plus'] - df['di_minus']
 
     # --- Supertrend ---
-    st = _supertrend(df, 10, 3.0)
+    st = _supertrend(df, sp(10, scale), 3.0)
     df['supertrend'] = st['supertrend']
     df['supertrend_dir'] = st['direction']  # 1=bull, -1=bear
 
     # --- CCI ---
-    df['cci_20'] = _cci(df, 20)
+    df['cci_20'] = _cci(df, sp(20, scale))
 
     # --- Williams %R ---
-    df['willr_14'] = _willr(df, 14)
+    df['willr_14'] = _willr(df, sp(14, scale))
 
     # --- ROC / Momentum ---
-    df['roc_5'] = (close / close.shift(5) - 1) * 100
-    df['roc_10'] = (close / close.shift(10) - 1) * 100
-    df['roc_20'] = (close / close.shift(20) - 1) * 100
-    df['momentum_10'] = close - close.shift(10)
+    df['roc_5'] = (close / close.shift(sp(5, scale)) - 1) * 100
+    df['roc_10'] = (close / close.shift(sp(10, scale)) - 1) * 100
+    df['roc_20'] = (close / close.shift(sp(20, scale)) - 1) * 100
+    df['momentum_10'] = close - close.shift(sp(10, scale))
 
     # --- Donchian Channel ---
-    df['donchian_high_20'] = high.rolling(20).max()
-    df['donchian_low_20'] = low.rolling(20).min()
+    _dc_p = sp(20, scale)
+    df['donchian_high_20'] = high.rolling(_dc_p).max()
+    df['donchian_low_20'] = low.rolling(_dc_p).min()
     df['donchian_mid_20'] = (df['donchian_high_20'] + df['donchian_low_20']) / 2
     df['donchian_width'] = (df['donchian_high_20'] - df['donchian_low_20']) / (df['donchian_mid_20'] + 1e-10)
     df['donchian_pos'] = (close - df['donchian_low_20']) / (df['donchian_high_20'] - df['donchian_low_20'] + 1e-10)
 
-    # Breakout signals: price at 20-bar high/low
+    # Breakout signals: price at N-bar high/low
     df['at_donchian_high'] = (close >= df['donchian_high_20'].shift(1)).astype(int)
     df['at_donchian_low'] = (close <= df['donchian_low_20'].shift(1)).astype(int)
 
     # --- Stochastic ---
-    stoch_k, stoch_d = _stochastic(df, 14, 3)
+    stoch_k, stoch_d = _stochastic(df, sp(14, scale), sp(3, scale))
     df['stoch_k'] = stoch_k
     df['stoch_d'] = stoch_d
     df['stoch_cross'] = np.sign(stoch_k - stoch_d) - np.sign(stoch_k.shift(1) - stoch_d.shift(1))
 
     # --- MFI (Money Flow Index) ---
-    df['mfi_14'] = _mfi(df, 14)
+    df['mfi_14'] = _mfi(df, sp(14, scale))
 
     # --- Log Returns ---
     df['log_return_1'] = np.log(close / close.shift(1))
-    df['log_return_3'] = np.log(close / close.shift(3))
-    df['log_return_5'] = np.log(close / close.shift(5))
-    df['log_return_10'] = np.log(close / close.shift(10))
+    df['log_return_3'] = np.log(close / close.shift(sp(3, scale)))
+    df['log_return_5'] = np.log(close / close.shift(sp(5, scale)))
+    df['log_return_10'] = np.log(close / close.shift(sp(10, scale)))
 
-    # Realized volatility (20-bar rolling std of log returns)
-    df['realized_vol_20'] = df['log_return_1'].rolling(20).std() * np.sqrt(252)
+    # Realized volatility (N-bar rolling std of log returns)
+    df['realized_vol_20'] = df['log_return_1'].rolling(sp(20, scale)).std() * np.sqrt(252)
 
     # --- Candle Body features ---
     df['body'] = abs(close - open_)
@@ -142,7 +153,7 @@ def add_all_technical(df: pd.DataFrame) -> pd.DataFrame:
     df['consec_bear'] = _consecutive_same(df['candle_dir'], -1)
 
     # Ichimoku
-    ichi = _ichimoku(df)
+    ichi = _ichimoku(df, scale)
     df['ichi_tenkan'] = ichi['tenkan']
     df['ichi_kijun'] = ichi['kijun']
     df['ichi_above_cloud'] = ichi['above_cloud'].astype(float)
@@ -293,15 +304,16 @@ def _consecutive_same(dir_series: pd.Series, target: int) -> pd.Series:
     return result
 
 
-def _ichimoku(df: pd.DataFrame) -> dict:
+def _ichimoku(df: pd.DataFrame, scale: float = 1.0) -> dict:
     high = df['high']
     low = df['low']
     close = df['close']
 
-    tenkan = (high.rolling(9).max() + low.rolling(9).min()) / 2
-    kijun = (high.rolling(26).max() + low.rolling(26).min()) / 2
-    senkou_a = ((tenkan + kijun) / 2).shift(26)
-    senkou_b = ((high.rolling(52).max() + low.rolling(52).min()) / 2).shift(26)
+    p9, p26, p52 = sp(9, scale), sp(26, scale), sp(52, scale)
+    tenkan = (high.rolling(p9).max() + low.rolling(p9).min()) / 2
+    kijun = (high.rolling(p26).max() + low.rolling(p26).min()) / 2
+    senkou_a = ((tenkan + kijun) / 2).shift(p26)
+    senkou_b = ((high.rolling(p52).max() + low.rolling(p52).min()) / 2).shift(p26)
 
     above_cloud = (close > senkou_a) & (close > senkou_b)
     tk_cross = np.sign(tenkan - kijun) - np.sign(tenkan.shift(1) - kijun.shift(1))

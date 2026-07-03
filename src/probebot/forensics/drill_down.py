@@ -119,7 +119,7 @@ class DrillDownEngine:
 
         # Compute features
         try:
-            df = compute_all_features(df_raw, min_candles=50, verbose=self.verbose)
+            df = compute_all_features(df_raw, min_candles=50, verbose=self.verbose, timeframe=timeframe)
         except Exception as e:
             return {'error': f'feature computation failed: {e}'}
 
