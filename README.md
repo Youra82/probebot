@@ -218,7 +218,10 @@ Per Telegram werden automatisch HTML-Report + bot_spec.json gesendet.
 
 ## Phase 2 — Optimizer
 
-**Befehl:** `bash run_pipeline.sh` (Phase 2 direkt nach Forensik) oder manuell:
+**Befehl:** `bash run_pipeline.sh` (Phase 2 direkt nach Forensik), **`bash run_optimizer.sh`**
+(Phase 2 einzeln nachholen, z.B. wenn beim Pipeline-Lauf mit "n" übersprungen wurde — fragt nur
+Symbol/Timeframe/Trials/Kapital/Modus/Max-Drawdown ab, findet `bot_spec_*.json` + `data_*.parquet`
+automatisch), oder manuell:
 
 ```bash
 python -m probebot.analysis.optimizer \
@@ -668,6 +671,7 @@ Wird gewählt wenn kein einzelner Ansatz dominiert (Top-2 Scores < 25% auseinand
 ```
 probebot/
 |-- run_pipeline.sh              # Interaktiver Pipeline-Starter (Forensik + Optimizer)
+|-- run_optimizer.sh             # Phase 2 (Optimizer) einzeln nachholen, ohne Phase 1 neu zu starten
 |-- show_results.sh              # OOS Evaluation + Forensik-Viewer (9 Modi)
 |-- run_live_bot.sh              # Live Trading starten
 |-- master_runner.py             # Orchestriert alle aktiven Strategien
