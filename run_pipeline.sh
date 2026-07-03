@@ -48,58 +48,71 @@ if [[ "$MODE_INPUT" == "2" ]]; then
     # KURZER PFAD: nur Phase 2 (Optimizer) mit bereits vorhandener Forensik
     # ═══════════════════════════════════════════════════════════════════════
 
-    DEFAULT_SYMBOL=$(python3 -c "import json; print(json.load(open('settings.json')).get('symbol','BTC/USDT:USDT'))" 2>/dev/null || echo "BTC/USDT:USDT")
-    echo -e "${YELLOW}Symbol(e) — Kurzform oder vollstaendig, Leerzeichen = mehrere:${NC}"
-    echo -e "${CYAN}  Beispiele: BTC | ETH | BTC ETH SOL | BTC/USDT:USDT${NC}"
-    read -p "Symbol(e) [Standard: $DEFAULT_SYMBOL]: " SYMBOL_INPUT
-    SYMBOL_INPUT=$(echo "$SYMBOL_INPUT" | tr -d '\r\n' | xargs)
-
-    SYMBOLS=()
-    if [[ -z "$SYMBOL_INPUT" ]]; then
-        SYMBOLS=("$DEFAULT_SYMBOL")
-    else
-        for s in $SYMBOL_INPUT; do
-            SYMBOLS+=("$(expand_symbol "$s")")
-        done
-    fi
-    echo -e "${GREEN}  Symbole: ${SYMBOLS[*]}${NC}"
-
-    DEFAULT_TF=$(python3 -c "import json; print(json.load(open('settings.json')).get('primary_timeframe','1h'))" 2>/dev/null || echo "1h")
-    echo ""
-    echo -e "${YELLOW}Timeframe(s) — Leerzeichen = mehrere:${NC}"
-    read -p "Timeframe(s) [Standard: $DEFAULT_TF]: " TF_INPUT
-    TF_INPUT=$(echo "$TF_INPUT" | tr -d '\r\n' | xargs)
-
-    TIMEFRAMES=()
-    if [[ -z "$TF_INPUT" ]]; then
-        TIMEFRAMES=("$DEFAULT_TF")
-    else
-        for t in $TF_INPUT; do
-            TIMEFRAMES+=("$t")
-        done
-    fi
-    echo -e "${GREEN}  Timeframes: ${TIMEFRAMES[*]}${NC}"
-
-    # ── Existenz-Check: bot_spec + Daten-Cache muessen fuer ALLE Kombinationen da sein ──
-    echo ""
-    MISSING="n"
-    for TIMEFRAME in "${TIMEFRAMES[@]}"; do
-        for SYMBOL in "${SYMBOLS[@]}"; do
-            SYM_SAFE="${SYMBOL//[\/:]/_}"
-            BOT_SPEC="artifacts/db/bot_spec_${SYM_SAFE}_${TIMEFRAME}.json"
-            DATA_FILE="artifacts/data/data_${SYM_SAFE}_${TIMEFRAME}.parquet"
-            if [ ! -f "$BOT_SPEC" ] || [ ! -f "$DATA_FILE" ]; then
-                echo -e "${RED}Keine Forensik-Analyse gefunden fuer $SYMBOL $TIMEFRAME.${NC}"
-                MISSING="j"
+    # ── Vorhandene Forensik-Analysen automatisch finden ────────────────────────
+    echo -e "${YELLOW}Suche vorhandene Forensik-Analysen...${NC}"
+    FOUND_FILES=(artifacts/db/bot_spec_*.json)
+    PAIR_SYMBOLS=()
+    PAIR_TFS=()
+    if [ -e "${FOUND_FILES[0]}" ]; then
+        for f in "${FOUND_FILES[@]}"; do
+            base=$(basename "$f" .json)
+            base=${base#bot_spec_}
+            TF_PART="${base##*_}"
+            SYM_SAFE="${base%_*}"
+            # Erwartetes Muster: COIN_USDT_USDT (z.B. ETH_USDT_USDT) -> ETH/USDT:USDT
+            IFS='_' read -ra _parts <<< "$SYM_SAFE"
+            if [ "${#_parts[@]}" -eq 3 ]; then
+                SYM="${_parts[0]}/${_parts[1]}:${_parts[2]}"
+            else
+                SYM="$SYM_SAFE"
             fi
+            PAIR_SYMBOLS+=("$SYM")
+            PAIR_TFS+=("$TF_PART")
         done
-    done
-    if [[ "$MISSING" == "j" ]]; then
-        echo -e "${RED}Bitte zuerst Phase 1 (Forensik) fuer die fehlenden Kombinationen durchfuehren (Modus 1).${NC}"
+    fi
+
+    if [ "${#PAIR_SYMBOLS[@]}" -eq 0 ]; then
+        echo -e "${RED}Keine Forensik-Analysen gefunden (artifacts/db/bot_spec_*.json ist leer).${NC}"
+        echo "  Bitte zuerst Phase 1 (Forensik) ausfuehren (Modus 1)."
         deactivate
         exit 1
     fi
-    echo -e "${GREEN}✔ Forensik-Analyse fuer alle Kombinationen gefunden.${NC}"
+
+    echo ""
+    echo -e "${GREEN}Gefundene Forensik-Analysen:${NC}"
+    for i in "${!PAIR_SYMBOLS[@]}"; do
+        printf "  ${GREEN}%2d)${NC} %-20s %s\n" "$((i + 1))" "${PAIR_SYMBOLS[$i]}" "${PAIR_TFS[$i]}"
+    done
+    echo ""
+    read -p "Welche verwenden? (Nummern kommagetrennt, 'alle' fuer alle) [Standard: alle]: " SEL_INPUT
+    SEL_INPUT=$(echo "$SEL_INPUT" | tr -d '\r\n' | xargs)
+
+    PAIRS=()
+    if [[ -z "$SEL_INPUT" || "$SEL_INPUT" == "alle" || "$SEL_INPUT" == "a" ]]; then
+        for i in "${!PAIR_SYMBOLS[@]}"; do
+            PAIRS+=("${PAIR_SYMBOLS[$i]}|${PAIR_TFS[$i]}")
+        done
+    else
+        IFS=',' read -ra NUMS <<< "$SEL_INPUT"
+        for n in "${NUMS[@]}"; do
+            n=$(echo "$n" | xargs)
+            idx=$((n - 1))
+            if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#PAIR_SYMBOLS[@]}" ]; then
+                PAIRS+=("${PAIR_SYMBOLS[$idx]}|${PAIR_TFS[$idx]}")
+            fi
+        done
+    fi
+
+    if [ "${#PAIRS[@]}" -eq 0 ]; then
+        echo -e "${RED}Keine gueltige Auswahl.${NC}"
+        deactivate
+        exit 1
+    fi
+
+    echo -e "${GREEN}Ausgewaehlt:${NC}"
+    for p in "${PAIRS[@]}"; do
+        echo -e "  - ${p/|/  }"
+    done
 
     echo ""
     echo -e "${YELLOW}Bestehende Configs erzwungen ueberschreiben (Overfitting-Sperre umgehen)?${NC}"
@@ -433,6 +446,15 @@ except Exception as e:
     echo -e "${GREEN}=======================================================${NC}"
     echo -e "  ${GREEN}Forensik abgeschlossen!${NC}"
     echo -e "${GREEN}=======================================================${NC}"
+
+    # PAIRS aus dem kartesischen Produkt bauen, damit Phase 2 unten (gemeinsam
+    # mit Modus 2) einheitlich ueber PAIRS statt verschachtelter Schleifen laeuft.
+    PAIRS=()
+    for TIMEFRAME in "${TIMEFRAMES[@]}"; do
+        for SYMBOL in "${SYMBOLS[@]}"; do
+            PAIRS+=("${SYMBOL}|${TIMEFRAME}")
+        done
+    done
 fi
 
 # ── Phase 2: Optimizer ────────────────────────────────────────────────────────
@@ -490,51 +512,51 @@ if [[ "$OPT_INPUT" =~ ^[jJyY] ]]; then
     echo -e "${BLUE}=======================================================${NC}"
     echo ""
 
-    # Optimizer ueber alle TF × Symbol-Kombinationen
-    for TIMEFRAME in "${TIMEFRAMES[@]}"; do
-        for SYMBOL in "${SYMBOLS[@]}"; do
-            SYM_SAFE="${SYMBOL//[\/:]/_}"
-            BOT_SPEC="artifacts/db/bot_spec_${SYM_SAFE}_${TIMEFRAME}.json"
-            DATA_FILE="artifacts/data/data_${SYM_SAFE}_${TIMEFRAME}.parquet"
+    # Optimizer ueber alle ausgewaehlten Symbol/Timeframe-Paare
+    for PAIR in "${PAIRS[@]}"; do
+        SYMBOL="${PAIR%|*}"
+        TIMEFRAME="${PAIR#*|}"
+        SYM_SAFE="${SYMBOL//[\/:]/_}"
+        BOT_SPEC="artifacts/db/bot_spec_${SYM_SAFE}_${TIMEFRAME}.json"
+        DATA_FILE="artifacts/data/data_${SYM_SAFE}_${TIMEFRAME}.parquet"
 
-            if [ ! -f "$BOT_SPEC" ]; then
-                echo -e "${RED}bot_spec nicht gefunden: $BOT_SPEC${NC}"
-                echo "  Erst Forensik-Analyse ausfuehren."
-                continue
-            fi
-            if [ ! -f "$DATA_FILE" ]; then
-                echo -e "${RED}Daten-Cache nicht gefunden: $DATA_FILE${NC}"
-                echo "  Erst Forensik-Analyse ausfuehren."
-                continue
-            fi
+        if [ ! -f "$BOT_SPEC" ]; then
+            echo -e "${RED}bot_spec nicht gefunden: $BOT_SPEC${NC}"
+            echo "  Erst Forensik-Analyse ausfuehren."
+            continue
+        fi
+        if [ ! -f "$DATA_FILE" ]; then
+            echo -e "${RED}Daten-Cache nicht gefunden: $DATA_FILE${NC}"
+            echo "  Erst Forensik-Analyse ausfuehren."
+            continue
+        fi
 
-            SPLIT_IDX=$(python3 -c "import json; print(json.load(open('$BOT_SPEC'))['meta']['split_idx'])" 2>/dev/null || echo "0")
-            if [ "$SPLIT_IDX" -eq 0 ]; then
-                echo -e "${RED}split_idx nicht gefunden in $BOT_SPEC — Forensik neu ausfuehren${NC}"
-                continue
-            fi
+        SPLIT_IDX=$(python3 -c "import json; print(json.load(open('$BOT_SPEC'))['meta']['split_idx'])" 2>/dev/null || echo "0")
+        if [ "$SPLIT_IDX" -eq 0 ]; then
+            echo -e "${RED}split_idx nicht gefunden in $BOT_SPEC — Forensik neu ausfuehren${NC}"
+            continue
+        fi
 
-            echo -e "${BLUE}--- Optimizer: $SYMBOL $TIMEFRAME ---${NC}"
-            $PYTHON -m probebot.analysis.optimizer \
-                --symbol    "$SYMBOL" \
-                --timeframe "$TIMEFRAME" \
-                --bot_spec  "$BOT_SPEC" \
-                --data      "$DATA_FILE" \
-                --split_idx "$SPLIT_IDX" \
-                --trials    "$TRIALS" \
-                --capital   "$CAPITAL" \
-                --max_dd    "$MAXDD" \
-                --mode      "$OPT_MODE" \
-                ${OPT_FORCE}
+        echo -e "${BLUE}--- Optimizer: $SYMBOL $TIMEFRAME ---${NC}"
+        $PYTHON -m probebot.analysis.optimizer \
+            --symbol    "$SYMBOL" \
+            --timeframe "$TIMEFRAME" \
+            --bot_spec  "$BOT_SPEC" \
+            --data      "$DATA_FILE" \
+            --split_idx "$SPLIT_IDX" \
+            --trials    "$TRIALS" \
+            --capital   "$CAPITAL" \
+            --max_dd    "$MAXDD" \
+            --mode      "$OPT_MODE" \
+            ${OPT_FORCE}
 
-            OPT_EXIT=$?
-            if [ $OPT_EXIT -eq 0 ]; then
-                echo -e "${GREEN}$SYMBOL $TIMEFRAME Optimizer abgeschlossen.${NC}"
-            else
-                echo -e "${RED}Optimizer Fehler bei $SYMBOL $TIMEFRAME (Exit $OPT_EXIT)${NC}"
-            fi
-            echo ""
-        done
+        OPT_EXIT=$?
+        if [ $OPT_EXIT -eq 0 ]; then
+            echo -e "${GREEN}$SYMBOL $TIMEFRAME Optimizer abgeschlossen.${NC}"
+        else
+            echo -e "${RED}Optimizer Fehler bei $SYMBOL $TIMEFRAME (Exit $OPT_EXIT)${NC}"
+        fi
+        echo ""
     done
 
     echo -e "${GREEN}=======================================================${NC}"
