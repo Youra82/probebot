@@ -24,6 +24,25 @@ from ..forensics.database import ForensicsDB
 console = Console() if HAS_RICH else None
 
 
+def print_split_box(symbol: str, timeframe: str, start: str, split_date: str, end: str,
+                     train_n: int, test_n: int):
+    """Zeigt den tatsaechlichen 70/30-Split mit echten Daten fuer diesen Lauf —
+    immer sichtbar (auch im --quiet Modus), da User dies unabhaengig von der
+    sonstigen Verbose-Ausgabe sehen moechten."""
+    if HAS_RICH:
+        console.print(Panel(
+            f"[bold cyan]70 / 30 SPLIT — {symbol} {timeframe}[/]\n\n"
+            f"[white]{start}[/] [green]──70% TRAINING──[/] [white]{split_date}[/] [red]──30% OOS──[/] [white]{end}[/]\n\n"
+            f"[green]Training:[/] {train_n} Bewegungen (Lernen NUR hier)\n"
+            f"[red]OOS:[/]      {test_n} Bewegungen (nie gesehen — ehrliche Prüfung)",
+            border_style="cyan", expand=False,
+        ))
+    else:
+        print(f"\n70/30 Split — {symbol} {timeframe}")
+        print(f"  TRAINING [{start} → {split_date}]: {train_n} Bewegungen")
+        print(f"  OOS      [{split_date} → {end}]:   {test_n} Bewegungen  ← nie gesehen")
+
+
 def print_header(symbol: str, timeframe: str, start: str, end: str, n_movements: int):
     msg = (
         f"\n{'='*70}\n"

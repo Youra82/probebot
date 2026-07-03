@@ -376,10 +376,12 @@ def main():
     clusters           = _winner['clusters']
     validation_results = _winner['validation_results']
 
+    # Split-Box IMMER anzeigen (auch --quiet) — User will das unabhaengig von
+    # der sonstigen Verbose-Ausgabe pruefen koennen.
+    rpt.print_split_box(symbol, timeframe, start_date, split_date, end_date,
+                         len(movements_train), len(movements_test))
+
     if not quiet:
-        print(f"\n  Datentrennung (70% / 30%): Split bei {split_date}")
-        print(f"  TRAINING  [{start_date} → {split_date}]: {len(movements_train)} Bewegungen")
-        print(f"  TEST      [{split_date} → {end_date}]:   {len(movements_test)} Bewegungen  ← UNSICHTBAR für Lernen")
         rpt.print_correlations(correlations, top_n=top_n)
         if clusters:
             rpt.print_clusters(clusters)
