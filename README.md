@@ -220,12 +220,12 @@ Per Telegram werden automatisch HTML-Report + bot_spec.json gesendet.
 
 **Befehl:** `bash run_pipeline.sh` (Phase 2 direkt nach Forensik) oder manuell:
 
-> **Phase 2 später/einzeln nachholen:** Existiert für alle gewählten Symbol/Timeframe-Kombinationen
-> bereits eine Phase-1-Analyse (`bot_spec_*.json` + `data_*.parquet`), fragt `run_pipeline.sh` direkt
-> nach der Timeframe-Auswahl "Überspringen und direkt zu Phase 2 (Optimizer)?" — alle Phase-1-Fragen
-> (Bewegungstypen, Drill-Down, ...) entfallen dann, es geht direkt zu Trials/Kapital/Modus/Max-Drawdown.
-> Kein separates Skript nötig — derselbe Befehl `bash run_pipeline.sh` erkennt automatisch, ob Phase 1
-> schon erledigt ist.
+> **Phase 2 später/einzeln nachholen:** `run_pipeline.sh` fragt ganz am Anfang "Was möchtest du tun?
+> 1) Forensik durchführen (Phase 1)  2) Nur Optimizer (Phase 2)". Bei Option 2 werden nur Symbol(e) +
+> Timeframe(s) abgefragt (um `bot_spec_*.json` + `data_*.parquet` zu finden) — alle Phase-1-Fragen
+> (Kompletter Neustart, Bewegungstypen, Drill-Down, Telegram, ...) entfallen, es geht direkt zu
+> Trials/Kapital/Modus/Max-Drawdown/`--force`. Fehlt für eine Kombination noch die Phase-1-Analyse,
+> bricht das Skript mit klarer Fehlermeldung ab (erst Option 1 nutzen). Kein separates Skript nötig.
 
 ```bash
 python -m probebot.analysis.optimizer \
