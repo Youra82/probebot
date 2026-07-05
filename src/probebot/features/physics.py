@@ -148,7 +148,7 @@ def _rolling_hurst_jit(log_r: np.ndarray, window: int) -> np.ndarray:
     for i in range(window, n):
         chunk = log_r[i - window:i]
         valid = chunk[~np.isnan(chunk)]
-        if len(valid) < window // 2:
+        if len(valid) < window // 2 or len(valid) < 2:
             continue
         m = np.mean(valid)
         cum_dev = np.cumsum(valid - m)
