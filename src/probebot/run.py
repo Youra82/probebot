@@ -105,25 +105,45 @@ def main():
         if use_telegram and tg_token and path:
             send_document(tg_token, tg_chat, path, caption)
 
+    import threading
+
     _run_start_ts = time.time()
+    _status_lock = threading.Lock()
+    _ticker_state = {'msg': None}
+    _ticker_stop = threading.Event()
 
     def _elapsed() -> str:
         s = int(time.time() - _run_start_ts)
         return f"{s // 60:02d}:{s % 60:02d}"
 
-    def _status(msg: str, final: bool = False):
-        """Verbose: normale Zeile. Quiet: an-Ort-bleibender Statusbalken (\\r), nur die
-        Abschlusszeile (final=True) bekommt einen echten Zeilenumbruch und bleibt stehen."""
-        msg = f"[{_elapsed()}] {msg}"
-        if not quiet:
-            print(msg)
-            return
-        line = f"  {symbol} {timeframe}  {msg}"
+    def _render(msg: str, final: bool = False):
+        line = f"  {symbol} {timeframe}  [{_elapsed()}] {msg}"
         pad = ' ' * max(0, 100 - len(line))
-        sys.stdout.write(f"\r{line}{pad}")
+        with _status_lock:
+            sys.stdout.write(f"\r{line}{pad}")
+            if final:
+                sys.stdout.write('\n')
+            sys.stdout.flush()
+
+    def _ticker_loop():
+        # Rendert die zuletzt gesetzte Statuszeile jede Sekunde neu, damit die
+        # verstrichene Zeit auch waehrend langer Berechnungen (z.B. ein
+        # Perioden-Kandidat) sichtbar weiterlaeuft, statt einzufrieren.
+        while not _ticker_stop.wait(1.0):
+            if _ticker_state['msg'] is not None:
+                _render(_ticker_state['msg'])
+
+    def _status(msg: str, final: bool = False):
+        """Verbose: normale Zeile. Quiet: an-Ort-bleibender Statusbalken (\\r), der per
+        Hintergrund-Thread sekuendlich mit aktueller Laufzeit neu gerendert wird. Nur
+        die Abschlusszeile (final=True) bekommt einen echten Zeilenumbruch und bleibt stehen."""
+        if not quiet:
+            print(f"[{_elapsed()}] {msg}")
+            return
+        _ticker_state['msg'] = msg
+        _render(msg, final=final)
         if final:
-            sys.stdout.write('\n')
-        sys.stdout.flush()
+            _ticker_stop.set()
 
     if not quiet:
         print(f"\nProbebot starting...")
@@ -131,6 +151,7 @@ def main():
         print(f"  Telegram: {'enabled' if (use_telegram and tg_token) else 'disabled'}")
     else:
         _status("[0/6] Starte...")
+        threading.Thread(target=_ticker_loop, daemon=True).start()
 
     # ─── LIVE MODE ──────────────────────────────────────────────────────────
     if args.mode == 'live':
