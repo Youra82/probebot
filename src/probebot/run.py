@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 logging.basicConfig(level=logging.WARNING, format='%(levelname)s %(name)s: %(message)s')
@@ -104,9 +105,16 @@ def main():
         if use_telegram and tg_token and path:
             send_document(tg_token, tg_chat, path, caption)
 
+    _run_start_ts = time.time()
+
+    def _elapsed() -> str:
+        s = int(time.time() - _run_start_ts)
+        return f"{s // 60:02d}:{s % 60:02d}"
+
     def _status(msg: str, final: bool = False):
         """Verbose: normale Zeile. Quiet: an-Ort-bleibender Statusbalken (\\r), nur die
         Abschlusszeile (final=True) bekommt einen echten Zeilenumbruch und bleibt stehen."""
+        msg = f"[{_elapsed()}] {msg}"
         if not quiet:
             print(msg)
             return
