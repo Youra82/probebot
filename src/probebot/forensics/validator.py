@@ -78,23 +78,25 @@ class OutOfSampleValidator:
             recall_pct = round(recall_hits / n_test * 100) if n_test else 0
 
             # ── B) PRECISION: Wenn Signal feuert — folgt die Bewegung? ──────────
-            signal_fires      = 0
-            signal_confirmed  = 0
-            test_event_indices = {m.idx for m in test_mvts}
+            # Vektorisiert (numpy statt df.iloc[idx] pro Zeile) — die Bedingungen
+            # sind einfache Schwellenwert-Vergleiche auf einer Feature-Spalte,
+            # koennen also fuer den ganzen Testbereich auf einmal ausgewertet werden.
+            test_range_start = split_idx
+            test_range_end = min(len(df), split_idx + len(df))
+            cond_masks = [self._check_condition_vectorized(df, cond) for cond in must_have]
+            conditions_met_count = np.sum(cond_masks, axis=0)
+            signal_mask = (conditions_met_count / len(must_have)) >= 0.5
+            fire_idx = np.nonzero(signal_mask[test_range_start:test_range_end])[0] + test_range_start
+            signal_fires = int(len(fire_idx))
 
-            for idx in range(split_idx, min(len(df), split_idx + len(df))):
-                # Signalbedingungen prüfen (alle Trainings-must_have)
-                conditions_met = sum(
-                    1 for cond in must_have
-                    if self._check_condition(df, idx, cond)
-                )
-                if conditions_met / len(must_have) < 0.5:
-                    continue
-                signal_fires += 1
-                # Folgt in den nächsten signal_window Kerzen ein Event dieses Typs?
-                if any(idx + 1 <= ei <= idx + self.signal_window
-                       for ei in test_event_indices):
-                    signal_confirmed += 1
+            test_event_arr = np.array(sorted({m.idx for m in test_mvts}), dtype=np.int64)
+            signal_confirmed = 0
+            if signal_fires and len(test_event_arr):
+                lo = fire_idx + 1
+                hi = fire_idx + self.signal_window
+                left = np.searchsorted(test_event_arr, lo, side='left')
+                right = np.searchsorted(test_event_arr, hi, side='right')
+                signal_confirmed = int(np.sum(right > left))
 
             precision_pct = round(signal_confirmed / signal_fires * 100) if signal_fires else 0
 
@@ -143,6 +145,23 @@ class OutOfSampleValidator:
             }
 
         return results
+
+    def _check_condition_vectorized(self, df, cond: dict) -> np.ndarray:
+        """Wie _check_condition, aber fuer die gesamte Spalte auf einmal (numpy)."""
+        feat      = cond.get('feature', '')
+        t_stat    = cond.get('t_statistic', 0)
+        threshold = cond.get('mean_before', cond.get('mean_all', 0))
+
+        if feat not in df.columns:
+            return np.zeros(len(df), dtype=bool)
+
+        vals = df[feat].to_numpy(dtype=float, na_value=np.nan)
+        valid = ~np.isnan(vals)
+        if t_stat > 0:
+            met = vals > threshold * 0.9
+        else:
+            met = vals < threshold * 1.1
+        return met & valid
 
     def _check_condition(self, df, idx: int, cond: dict) -> bool:
         """Prüft ob eine Trainings-Bedingung zum Zeitpunkt idx erfüllt ist."""

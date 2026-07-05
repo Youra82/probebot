@@ -1,12 +1,18 @@
 """SQLite persistence for movement forensics."""
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 
-DB_PATH = Path(__file__).parent.parent.parent.parent / "artifacts" / "db" / "forensics.db"
+_ARTIFACTS_ROOT = (
+    Path(os.environ["PROBEBOT_ARTIFACTS_ROOT"])
+    if os.environ.get("PROBEBOT_ARTIFACTS_ROOT")
+    else Path(__file__).parent.parent.parent.parent
+)
+DB_PATH = _ARTIFACTS_ROOT / "artifacts" / "db" / "forensics.db"
 
 
 class ForensicsDB:

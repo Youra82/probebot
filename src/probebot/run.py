@@ -14,6 +14,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,11 @@ logging.basicConfig(level=logging.WARNING, format='%(levelname)s %(name)s: %(mes
 
 ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT / 'src'))
+
+# Artifacts (bot_spec/report/data cache/pattern-db) can be redirected to an
+# isolated scratch location via PROBEBOT_ARTIFACTS_ROOT — used by scan_edges.sh
+# for its quick pre-screen so it never touches the real, live-trading artifacts.
+ARTIFACTS_ROOT = Path(os.environ['PROBEBOT_ARTIFACTS_ROOT']) if os.environ.get('PROBEBOT_ARTIFACTS_ROOT') else ROOT
 
 # secret.json is one level above the probebot directory (shared with all bots)
 SECRET_PATH = ROOT.parent / 'secret.json'
@@ -48,6 +54,10 @@ def main():
     parser.add_argument('--quiet', action='store_true', default=False,
                         help='Nur ein an-Ort-bleibender Statusbalken statt der vollen Detail-Ausgabe '
                              '(Details landen weiterhin im HTML-Report). Für Batch-Läufe über viele Symbole.')
+    parser.add_argument('--period_scales', default=None,
+                        help='Komma-getrennte Liste von Perioden-Kandidaten-Multiplikatoren, '
+                             'ueberschreibt die Standard-5er-Suche (0.5,0.75,1.0,1.5,2.0). '
+                             'Fuer scan_edges.sh: schnellerer Vorab-Check mit z.B. "0.5,1.5".')
     args = parser.parse_args()
     quiet = args.quiet
     if quiet:
@@ -323,10 +333,14 @@ def main():
         })
         return _result
 
+    _scale_candidates = _PERIOD_SCALE_CANDIDATES
+    if args.period_scales:
+        _scale_candidates = [float(x) for x in args.period_scales.split(',') if x.strip()]
+
     _candidates = []
-    for _i, _sm in enumerate(_PERIOD_SCALE_CANDIDATES):
+    for _i, _sm in enumerate(_scale_candidates):
         if quiet:
-            _status(f"[2/6] Perioden-Kandidat {_i + 1}/{len(_PERIOD_SCALE_CANDIDATES)} ({_sm}x)...")
+            _status(f"[2/6] Perioden-Kandidat {_i + 1}/{len(_scale_candidates)} ({_sm}x)...")
         _candidates.append(_run_candidate(_sm))
 
     _winner = max(_candidates, key=lambda c: (c['score'], -abs(c['scale_mult'] - 1.0)))
@@ -417,7 +431,7 @@ def main():
             print(f"\n[4b] OOS-Validierung übersprungen (keine Test-Events)")
 
     # Feature-Cache erst jetzt speichern (Gewinner-Kandidat, nicht jeder Versuch)
-    _data_dir = ROOT / 'artifacts' / 'data'
+    _data_dir = ARTIFACTS_ROOT / 'artifacts' / 'data'
     _data_dir.mkdir(parents=True, exist_ok=True)
     _sym_safe = symbol.replace('/', '_').replace(':', '_')
     _data_path = _data_dir / f'data_{_sym_safe}_{timeframe}.parquet'
@@ -484,7 +498,7 @@ def main():
     # ─── [6] Charts lokal + 2 Dateien per Telegram ──────────────────────────
     _status("[6/6] Erstelle Charts + Reports...") if quiet else print(f"\n[6/6] Generating charts + reports...")
 
-    chart_dir = ROOT / 'artifacts' / 'charts'
+    chart_dir = ARTIFACTS_ROOT / 'artifacts' / 'charts'
     chart_dir.mkdir(parents=True, exist_ok=True)
     sym_safe = symbol.replace('/', '_').replace(':', '_')
 
@@ -515,7 +529,7 @@ def main():
     # ── Datei 1: HTML-Report ─────────────────────────────────────────────────
     if not quiet:
         print("  Generating HTML report...")
-    html_path = str(ROOT / 'artifacts' / 'db' / f'report_{sym_safe}_{timeframe}.html')
+    html_path = str(ARTIFACTS_ROOT / 'artifacts' / 'db' / f'report_{sym_safe}_{timeframe}.html')
     # focus movements = die top-N die auch für Drill-Down genutzt wurden
     focus_movements = sorted(movements, key=lambda x: abs(x.magnitude_pct), reverse=True)[:top_n]
     generate_html_report(
@@ -537,7 +551,7 @@ def main():
     # ── Datei 2: Bot-Spec JSON ───────────────────────────────────────────────
     if not quiet:
         print("  Generating bot spec...")
-    spec_path = str(ROOT / 'artifacts' / 'db' / f'bot_spec_{sym_safe}_{timeframe}.json')
+    spec_path = str(ARTIFACTS_ROOT / 'artifacts' / 'db' / f'bot_spec_{sym_safe}_{timeframe}.json')
     generate_bot_spec(
         symbol=symbol, timeframe=timeframe,
         start_date=start_date, end_date=end_date,
