@@ -49,12 +49,31 @@ if [[ "$MODE_INPUT" == "2" ]]; then
     # ═══════════════════════════════════════════════════════════════════════
 
     # ── Vorhandene Forensik-Analysen automatisch finden ────────────────────────
-    echo -e "${YELLOW}Suche vorhandene Forensik-Analysen...${NC}"
+    # Nur Kombinationen mit mind. einem OOS-validierten, verwendbaren Bewegungstyp
+    # (oos_validation.*.use_in_bot=true) anzeigen - dieselbe Pruefung wie in
+    # scan_edges.sh. Sonst landen hier auch Analysen ohne jeden Edge, was den
+    # Optimizer auf Basis nicht-validierter Signale laufen liesse.
+    echo -e "${YELLOW}Suche vorhandene Forensik-Analysen mit validiertem Edge...${NC}"
     FOUND_FILES=(artifacts/db/bot_spec_*.json)
     PAIR_SYMBOLS=()
     PAIR_TFS=()
+    PAIR_USABLE=()
     if [ -e "${FOUND_FILES[0]}" ]; then
         for f in "${FOUND_FILES[@]}"; do
+            USABLE=$(python3 -c "
+import json
+try:
+    d = json.load(open('$f'))
+    oos = d.get('oos_validation', {})
+    print(sum(1 for v in oos.values() if v.get('use_in_bot')))
+except Exception:
+    print(0)
+" 2>/dev/null)
+            USABLE="${USABLE:-0}"
+            if [ "$USABLE" -eq 0 ] 2>/dev/null; then
+                continue
+            fi
+
             base=$(basename "$f" .json)
             base=${base#bot_spec_}
             TF_PART="${base##*_}"
@@ -68,20 +87,22 @@ if [[ "$MODE_INPUT" == "2" ]]; then
             fi
             PAIR_SYMBOLS+=("$SYM")
             PAIR_TFS+=("$TF_PART")
+            PAIR_USABLE+=("$USABLE")
         done
     fi
 
     if [ "${#PAIR_SYMBOLS[@]}" -eq 0 ]; then
-        echo -e "${RED}Keine Forensik-Analysen gefunden (artifacts/db/bot_spec_*.json ist leer).${NC}"
-        echo "  Bitte zuerst Phase 1 (Forensik) ausfuehren (Modus 1)."
+        echo -e "${RED}Keine Forensik-Analyse mit validiertem Edge gefunden (use_in_bot=true in oos_validation).${NC}"
+        echo "  Bitte zuerst Phase 1 (Forensik) ausfuehren (Modus 1) oder scan_edges.sh nutzen."
         deactivate
         exit 1
     fi
 
     echo ""
-    echo -e "${GREEN}Gefundene Forensik-Analysen:${NC}"
+    echo -e "${GREEN}Gefundene Forensik-Analysen mit validiertem Edge:${NC}"
     for i in "${!PAIR_SYMBOLS[@]}"; do
-        printf "  ${GREEN}%2d)${NC} %-20s %s\n" "$((i + 1))" "${PAIR_SYMBOLS[$i]}" "${PAIR_TFS[$i]}"
+        printf "  ${GREEN}%2d)${NC} %-20s %-6s (%s Typ(en) verwendbar)\n" \
+            "$((i + 1))" "${PAIR_SYMBOLS[$i]}" "${PAIR_TFS[$i]}" "${PAIR_USABLE[$i]}"
     done
     echo ""
     read -p "Welche verwenden? (Nummern kommagetrennt, 'alle' fuer alle) [Standard: alle]: " SEL_INPUT
