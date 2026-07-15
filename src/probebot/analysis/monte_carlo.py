@@ -117,8 +117,17 @@ def main():
     names = [r['name'] for r in rows]
     box_colors = ['#16a34a' if r['p50'] >= 0 else '#dc2626' for r in rows]
 
-    bp1 = ax1.boxplot([r['pnl_pcts'] for r in rows], vert=False, labels=names,
+    # set_yticklabels() statt boxplot(labels=...)/(tick_labels=...): der
+    # Parametername wurde zwischen Matplotlib-Versionen umbenannt (3.9: neu
+    # "tick_labels", alt "labels" deprecated; manche Installationen — z.B.
+    # VPS — haben "labels" bereits vollstaendig entfernt) — set_yticklabels
+    # funktioniert versionsunabhaengig in jeder Matplotlib-Version.
+    ytick_pos = list(range(1, n + 1))
+
+    bp1 = ax1.boxplot([r['pnl_pcts'] for r in rows], vert=False,
                        patch_artist=True, showfliers=False, widths=0.6)
+    ax1.set_yticks(ytick_pos)
+    ax1.set_yticklabels(names)
     for patch, color in zip(bp1['boxes'], box_colors):
         patch.set_facecolor(color)
         patch.set_alpha(0.75)
@@ -126,8 +135,10 @@ def main():
     ax1.set_title(f'Endkapital-Verteilung (PnL%)\n5./50./95. Perzentil je Config', fontsize=10)
     ax1.tick_params(axis='y', labelsize=8)
 
-    bp2 = ax2.boxplot([r['max_dds'] for r in rows], vert=False, labels=names,
+    bp2 = ax2.boxplot([r['max_dds'] for r in rows], vert=False,
                        patch_artist=True, showfliers=False, widths=0.6)
+    ax2.set_yticks(ytick_pos)
+    ax2.set_yticklabels(names)
     for patch, r in zip(bp2['boxes'], rows):
         patch.set_facecolor('#ef4444' if r['ruin'] > 10 else '#f59e0b' if r['ruin'] > 2 else '#3b82f6')
         patch.set_alpha(0.75)
