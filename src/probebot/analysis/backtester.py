@@ -162,6 +162,8 @@ def run_backtest(
                     'sl':           round(open_pos['sl'], 4),
                     'tp':           round(open_pos['tp'], 4),
                     'score':        round(open_pos['score'], 2),
+                    'hit_rate':     round(open_pos.get('hit_rate', 0.0), 3),
+                    'n_types_signaling': open_pos.get('n_types_signaling', 1),
                     'pnl':          round(pnl, 4),
                     'pnl_pct':      round(pnl / start_capital * 100, 3),
                     'close_reason': close_reason,
@@ -174,6 +176,8 @@ def run_backtest(
         if open_pos is None:
             best_score = 0.0
             best_mtype = None
+            best_hit_rate = 0.0
+            n_types_signaling = 0
 
             for mtype, conds in move_conds.items():
                 if not conds:
@@ -182,9 +186,12 @@ def run_backtest(
                 if n_total == 0:
                     continue
                 hit_rate = n_met / n_total
-                if score >= min_score and hit_rate >= min_hit_rate and score > best_score:
-                    best_score = score
-                    best_mtype = mtype
+                if score >= min_score and hit_rate >= min_hit_rate:
+                    n_types_signaling += 1
+                    if score > best_score:
+                        best_score = score
+                        best_mtype = mtype
+                        best_hit_rate = hit_rate
 
             if best_mtype is not None:
                 direction = move_dirs[best_mtype]
@@ -219,6 +226,8 @@ def run_backtest(
                     'risk_amount': risk_amt,
                     'move_type':   best_mtype,
                     'score':       best_score,
+                    'hit_rate':    best_hit_rate,
+                    'n_types_signaling': n_types_signaling,
                     'fee_cost':    fee_cost,
                 }
 
@@ -248,6 +257,8 @@ def run_backtest(
             'sl':           round(open_pos['sl'], 4),
             'tp':           round(open_pos['tp'], 4),
             'score':        round(open_pos['score'], 2),
+            'hit_rate':     round(open_pos.get('hit_rate', 0.0), 3),
+            'n_types_signaling': open_pos.get('n_types_signaling', 1),
             'pnl':          round(pnl, 4),
             'pnl_pct':      round(pnl / start_capital * 100, 3),
             'close_reason': 'END',
