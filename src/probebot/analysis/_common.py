@@ -97,8 +97,13 @@ def get_telegram():
 
 
 def send_photo(token, chat_id, path, caption=''):
-    from probebot.utils.telegram import send_photo as _send_photo
-    _send_photo(token, chat_id, path, caption)
+    from probebot.utils.telegram import send_photo as _send_photo, send_document as _send_document
+    if _send_photo(token, chat_id, path, caption):
+        return True
+    # sendPhoto lehnt Bilder ab deren Breite+Hoehe > 10000px liegt (z.B. Analysen
+    # mit vielen Configs, wo die Chart-Hoehe pro Config skaliert) — als Dokument
+    # gibt es dieses Limit nicht, das Bild kommt so trotzdem an.
+    return _send_document(token, chat_id, path, caption)
 
 
 # ─── Charts ────────────────────────────────────────────────────────────────────
@@ -130,8 +135,10 @@ def save_send(fig, name: str, caption: str = '', no_telegram: bool = False) -> s
     if not no_telegram:
         token, chat_id = get_telegram()
         if token:
-            send_photo(token, chat_id, path, caption)
-            print(f"  {G}Via Telegram gesendet.{NC}")
+            if send_photo(token, chat_id, path, caption):
+                print(f"  {G}Via Telegram gesendet.{NC}")
+            else:
+                print(f"  {R}Telegram-Versand fehlgeschlagen.{NC}")
         else:
             print(f"  {Y}Telegram nicht konfiguriert.{NC}")
     return path
