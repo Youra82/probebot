@@ -53,15 +53,18 @@ def main():
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    import numpy as np
-
-    n_cfg = len(configs)
-    fig, axes = plt.subplots(n_cfg, 2, figsize=(14, 5 * n_cfg), squeeze=False)
-    fig.patch.set_facecolor('#0f172a')
 
     caption_lines = [f"probebot Monte Carlo (Bootstrap) | {args.simulations:,} Sims\n"]
 
-    for row, cfg in enumerate(configs):
+    # Pro Config nur die fertigen PnL-/DD-Verteilungen sammeln — die Grafik
+    # zeigt sie am Ende als kompakten Boxplot-Vergleich (ein Balken pro
+    # Config statt einem eigenen Histogramm-Panel). Ein Histogramm-Panel pro
+    # Config skaliert die Bildhoehe linear mit der Anzahl Configs und wird
+    # ab ~10 Configs auf einem Handy-Bildschirm unlesbar (bei 13 Configs
+    # bereits 2085x9684px) — Boxplots brauchen dagegen nur eine schmale Zeile
+    # pro Config und bleiben bei jeder Config-Anzahl auf einen Blick lesbar.
+    rows = []
+    for cfg in configs:
         name = config_name(cfg)
         res = run_oos_backtest(cfg)
         if res is None or not res.get('trades'):
@@ -95,22 +98,48 @@ def main():
               f"Profitabel-Wahrscheinlichkeit: {profitable:.1f}%\n")
         caption_lines.append(f"{name}: Median {p50:+.0f}% | Ruin {ruin:.1f}%")
 
-        ax1, ax2 = axes[row][0], axes[row][1]
-        style_axes(ax1, ax2)
-        ax1.hist(pnl_pcts, bins=60, color='#2563eb', alpha=0.7, edgecolor='none')
-        ax1.axvline(p5, color='#ef4444', linestyle='--', linewidth=2, label=f'P5: {p5:+.0f}%')
-        ax1.axvline(p50, color='#fbbf24', linewidth=2, label=f'Median: {p50:+.0f}%')
-        ax1.axvline(p95, color='#16a34a', linestyle='--', linewidth=2, label=f'P95: {p95:+.0f}%')
-        ax1.set_title(f'{name} — Endkapital-Verteilung', fontsize=10)
-        ax1.legend(fontsize=8, facecolor='#1e293b', labelcolor='white')
+        rows.append({
+            'name': name, 'pnl_pcts': pnl_pcts, 'max_dds': max_dds,
+            'p50': p50, 'dd95': dd95, 'ruin': ruin,
+        })
 
-        ax2.hist(max_dds, bins=50, color='#dc2626', alpha=0.7, edgecolor='none')
-        ax2.axvline(dd95, color='#ef4444', linestyle='--', linewidth=2, label=f'P95: {dd95:.1f}%')
-        ax2.set_title(f'{name} — Max-Drawdown-Verteilung (Ruin: {ruin:.1f}%)', fontsize=10)
-        ax2.legend(fontsize=8, facecolor='#1e293b', labelcolor='white')
+    if not rows:
+        print(f"  {R}Keine verwertbaren Ergebnisse.{NC}")
+        return
 
-    fig.suptitle(f'probebot Monte Carlo | {args.simulations:,} Bootstrap-Simulationen je Config',
-                 color='white', fontsize=12)
+    rows.sort(key=lambda r: r['p50'], reverse=True)
+    n = len(rows)
+    height = max(4.5, 0.45 * n)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, height))
+    fig.patch.set_facecolor('#0f172a')
+    style_axes(ax1, ax2)
+
+    names = [r['name'] for r in rows]
+    box_colors = ['#16a34a' if r['p50'] >= 0 else '#dc2626' for r in rows]
+
+    bp1 = ax1.boxplot([r['pnl_pcts'] for r in rows], vert=False, labels=names,
+                       patch_artist=True, showfliers=False, widths=0.6)
+    for patch, color in zip(bp1['boxes'], box_colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.75)
+    ax1.axvline(0, color='white', linewidth=0.8, alpha=0.4)
+    ax1.set_title(f'Endkapital-Verteilung (PnL%)\n5./50./95. Perzentil je Config', fontsize=10)
+    ax1.tick_params(axis='y', labelsize=8)
+
+    bp2 = ax2.boxplot([r['max_dds'] for r in rows], vert=False, labels=names,
+                       patch_artist=True, showfliers=False, widths=0.6)
+    for patch, r in zip(bp2['boxes'], rows):
+        patch.set_facecolor('#ef4444' if r['ruin'] > 10 else '#f59e0b' if r['ruin'] > 2 else '#3b82f6')
+        patch.set_alpha(0.75)
+    ax2.set_title('Max-Drawdown-Verteilung\n(Farbe = Ruin-Wahrscheinlichkeit)', fontsize=10)
+    ax2.tick_params(axis='y', labelsize=8)
+    for i, r in enumerate(rows):
+        ax2.annotate(f"Ruin {r['ruin']:.0f}%", xy=(1.0, i + 1), xycoords=('axes fraction', 'data'),
+                     xytext=(4, 0), textcoords='offset points', fontsize=7,
+                     color='white', va='center')
+
+    fig.suptitle(f'probebot Monte Carlo | {args.simulations:,} Bootstrap-Simulationen je Config '
+                 f'(sortiert nach Median-PnL)', color='white', fontsize=11)
     plt.tight_layout()
     save_send(fig, 'monte_carlo', "\n".join(caption_lines), args.no_telegram)
     print(f"  {G}Analyse abgeschlossen.{NC}\n")
