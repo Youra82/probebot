@@ -54,16 +54,14 @@ def main():
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    caption_lines = [f"probebot Monte Carlo (Bootstrap) | {args.simulations:,} Sims\n"]
-
-    # Pro Config nur die fertigen PnL-/DD-Verteilungen sammeln — die Grafik
-    # zeigt sie am Ende als kompakten Boxplot-Vergleich (ein Balken pro
-    # Config statt einem eigenen Histogramm-Panel). Ein Histogramm-Panel pro
-    # Config skaliert die Bildhoehe linear mit der Anzahl Configs und wird
-    # ab ~10 Configs auf einem Handy-Bildschirm unlesbar (bei 13 Configs
-    # bereits 2085x9684px) — Boxplots brauchen dagegen nur eine schmale Zeile
-    # pro Config und bleiben bei jeder Config-Anzahl auf einen Blick lesbar.
-    rows = []
+    # Ein eigenes Chart pro Config statt einem gemeinsamen Riesenbild: bei
+    # vielen Configs (13+) skaliert ein Panel-pro-Config-Layout entweder die
+    # Bildhoehe oder -breite linear mit und wird auf dem Handy unlesbar (bei
+    # 13 Configs bereits 2085x9684px). Ein kompakter Boxplot-Vergleich loest
+    # zwar das Groessenproblem, verliert aber das Detail pro Strategie —
+    # daher hier: jede Config bekommt ihr eigenes kleines Histogramm-Paar
+    # und wird sofort einzeln verschickt.
+    n_sent = 0
     for cfg in configs:
         name = config_name(cfg)
         res = run_oos_backtest(cfg)
@@ -73,6 +71,7 @@ def main():
 
         trades = res['trades']
         start_capital = cfg.get('risk', {}).get('start_capital', 100.0)
+        risk_pct = cfg.get('risk', {}).get('risk_per_trade_pct', 0.0)
         n_trades = len(trades)
 
         final_equities, max_dds = [], []
@@ -96,64 +95,48 @@ def main():
         col_ruin = R if ruin > 10 else Y if ruin > 2 else G
         print(f"    Ruin-Wahrscheinlichkeit (<50%): {col_ruin}{ruin:.1f}%{NC}   "
               f"Profitabel-Wahrscheinlichkeit: {profitable:.1f}%\n")
-        caption_lines.append(f"{name}: Median {p50:+.0f}% | Ruin {ruin:.1f}%")
 
-        rows.append({
-            'name': name, 'pnl_pcts': pnl_pcts, 'max_dds': max_dds,
-            'p50': p50, 'dd95': dd95, 'ruin': ruin,
-        })
+        dd50 = max_dds_sorted[int(0.50 * len(max_dds_sorted))]
 
-    if not rows:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+        fig.patch.set_facecolor('#0f172a')
+        style_axes(ax1, ax2)
+
+        ax1.hist(pnl_pcts, bins=80, color='#2563eb', alpha=0.7, edgecolor='none')
+        ax1.axvline(p5, color='#ef4444', linewidth=2, linestyle='--', label=f'5. Perzentil: {p5:+.0f}%')
+        ax1.axvline(p50, color='#fbbf24', linewidth=2, linestyle='-', label=f'Median: {p50:+.0f}%')
+        ax1.axvline(p95, color='#16a34a', linewidth=2, linestyle='--', label=f'95. Perzentil: {p95:+.0f}%')
+        ax1.axvline(0, color='white', linewidth=1, alpha=0.4)
+        ax1.set_xlabel('PnL% nach allen Trades')
+        ax1.set_ylabel('Häufigkeit')
+        ax1.set_title('Verteilung der Endkapitale', color='white')
+        ax1.legend(fontsize=9, facecolor='#1e293b', labelcolor='white', framealpha=0.5)
+
+        ax2.hist(max_dds, bins=60, color='#dc2626', alpha=0.7, edgecolor='none')
+        ax2.axvline(dd50, color='#fbbf24', linewidth=2, linestyle='-', label=f'Median MaxDD: {dd50:.1f}%')
+        ax2.axvline(dd95, color='#ef4444', linewidth=2, linestyle='--', label=f'95. Perzentil MaxDD: {dd95:.1f}%')
+        ax2.set_xlabel('Maximaler Drawdown (%)')
+        ax2.set_ylabel('Häufigkeit')
+        ax2.set_title('Verteilung der Max Drawdowns', color='white')
+        ax2.legend(fontsize=9, facecolor='#1e293b', labelcolor='white', framealpha=0.5)
+
+        fig.suptitle(
+            f'{name} Monte Carlo | {args.simulations:,} Simulationen | {n_trades} Trades | '
+            f'Risk/Trade: {risk_pct}% | Ruin-Wahrsch. (<50%): {ruin:.1f}%',
+            color='white', fontsize=11)
+        plt.tight_layout()
+
+        caption = (f"{name}  ({n_trades} Trades)\n"
+                   f"Median: {p50:+.1f}%  |  P5: {p5:+.1f}%  |  P95: {p95:+.1f}%\n"
+                   f"MaxDD P95: {dd95:.1f}%  |  Ruin: {ruin:.1f}%  |  Profitabel: {profitable:.1f}%")
+        safe = name.replace(' ', '_').replace('/', '')
+        save_send(fig, f'monte_carlo_{safe}', caption, args.no_telegram)
+        n_sent += 1
+
+    if n_sent == 0:
         print(f"  {R}Keine verwertbaren Ergebnisse.{NC}")
         return
-
-    rows.sort(key=lambda r: r['p50'], reverse=True)
-    n = len(rows)
-    height = max(4.5, 0.45 * n)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, height))
-    fig.patch.set_facecolor('#0f172a')
-    style_axes(ax1, ax2)
-
-    names = [r['name'] for r in rows]
-    box_colors = ['#16a34a' if r['p50'] >= 0 else '#dc2626' for r in rows]
-
-    # set_yticklabels() statt boxplot(labels=...)/(tick_labels=...): der
-    # Parametername wurde zwischen Matplotlib-Versionen umbenannt (3.9: neu
-    # "tick_labels", alt "labels" deprecated; manche Installationen — z.B.
-    # VPS — haben "labels" bereits vollstaendig entfernt) — set_yticklabels
-    # funktioniert versionsunabhaengig in jeder Matplotlib-Version.
-    ytick_pos = list(range(1, n + 1))
-
-    bp1 = ax1.boxplot([r['pnl_pcts'] for r in rows], vert=False,
-                       patch_artist=True, showfliers=False, widths=0.6)
-    ax1.set_yticks(ytick_pos)
-    ax1.set_yticklabels(names)
-    for patch, color in zip(bp1['boxes'], box_colors):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.75)
-    ax1.axvline(0, color='white', linewidth=0.8, alpha=0.4)
-    ax1.set_title(f'Endkapital-Verteilung (PnL%)\n5./50./95. Perzentil je Config', fontsize=10)
-    ax1.tick_params(axis='y', labelsize=8)
-
-    bp2 = ax2.boxplot([r['max_dds'] for r in rows], vert=False,
-                       patch_artist=True, showfliers=False, widths=0.6)
-    ax2.set_yticks(ytick_pos)
-    ax2.set_yticklabels(names)
-    for patch, r in zip(bp2['boxes'], rows):
-        patch.set_facecolor('#ef4444' if r['ruin'] > 10 else '#f59e0b' if r['ruin'] > 2 else '#3b82f6')
-        patch.set_alpha(0.75)
-    ax2.set_title('Max-Drawdown-Verteilung\n(Farbe = Ruin-Wahrscheinlichkeit)', fontsize=10)
-    ax2.tick_params(axis='y', labelsize=8)
-    for i, r in enumerate(rows):
-        ax2.annotate(f"Ruin {r['ruin']:.0f}%", xy=(1.0, i + 1), xycoords=('axes fraction', 'data'),
-                     xytext=(4, 0), textcoords='offset points', fontsize=7,
-                     color='white', va='center')
-
-    fig.suptitle(f'probebot Monte Carlo | {args.simulations:,} Bootstrap-Simulationen je Config '
-                 f'(sortiert nach Median-PnL)', color='white', fontsize=11)
-    plt.tight_layout()
-    save_send(fig, 'monte_carlo', "\n".join(caption_lines), args.no_telegram)
-    print(f"  {G}Analyse abgeschlossen.{NC}\n")
+    print(f"  {G}Analyse abgeschlossen — {n_sent} Chart(s).{NC}\n")
 
 
 if __name__ == '__main__':
