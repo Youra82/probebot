@@ -157,6 +157,7 @@ def create_chart(
     entry_short_x, entry_short_y, entry_short_txt = [], [], []
     exit_tp_x, exit_tp_y = [], []
     exit_sl_x, exit_sl_y = [], []
+    exit_liq_x, exit_liq_y = [], []
     exit_to_x, exit_to_y = [], []
 
     for t in trades:
@@ -183,17 +184,23 @@ def create_chart(
             exit_tp_x.append(xt); exit_tp_y.append(t['close_price'])
         elif cr == 'SL':
             exit_sl_x.append(xt); exit_sl_y.append(t['close_price'])
+        elif cr == 'LIQ':
+            exit_liq_x.append(xt); exit_liq_y.append(t['close_price'])
         else:
             exit_to_x.append(xt); exit_to_y.append(t['close_price'])
 
         sl = t.get('sl')
         tp = t.get('tp')
+        liq = t.get('liq_price')
         if sl is not None:
             fig.add_shape(type='line', x0=et, x1=xt, y0=sl, y1=sl,
                           line=dict(color='rgba(239,68,68,0.45)', width=1, dash='dot'))
         if tp is not None:
             fig.add_shape(type='line', x0=et, x1=xt, y0=tp, y1=tp,
                           line=dict(color='rgba(34,197,94,0.45)', width=1, dash='dot'))
+        if liq is not None and cr == 'LIQ':
+            fig.add_shape(type='line', x0=et, x1=xt, y0=liq, y1=liq,
+                          line=dict(color='rgba(255,0,255,0.6)', width=1.5, dash='dashdot'))
 
     if entry_long_x:
         fig.add_trace(go.Scatter(
@@ -227,6 +234,14 @@ def create_chart(
             marker=dict(color='#ef5350', symbol='x', size=11,
                         line=dict(width=2, color='#ef5350')),
             name='Exit SL ✗',
+        ), row=1, col=1, secondary_y=False)
+
+    if exit_liq_x:
+        fig.add_trace(go.Scatter(
+            x=exit_liq_x, y=exit_liq_y, mode='markers',
+            marker=dict(color='#ff00ff', symbol='diamond', size=13,
+                        line=dict(width=2, color='#7f007f')),
+            name='Exit LIQ ⚠',
         ), row=1, col=1, secondary_y=False)
 
     if exit_to_x:

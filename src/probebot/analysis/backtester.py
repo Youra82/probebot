@@ -14,6 +14,14 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List
 
+# Vereinfachter, konservativer Wartungsmargin-Puffer fuer die Liquidationsdistanz
+# (echte Bitget-Werte liegen je nach Symbol/Tier bei ca. 0.4-2%) -- besser zu
+# konservativ (mehr Liquidationen im Backtest) als zu optimistisch.
+MAINTENANCE_MARGIN_PCT = 0.5
+# Max. Anteil des Start-Kapitals der als Margin fuer eine einzelne Position
+# gebunden werden darf (analog zum Margin-Cap in ltbbot/mbot trade_manager.py).
+MAX_MARGIN_FRACTION = 0.9
+
 
 def compute_signal_score(row: dict, entry_conditions: dict,
                          t_threshold: float = 4.0) -> tuple:
@@ -69,7 +77,10 @@ def run_backtest(
         min_hit_rate (float):       minimum fraction of conds met      [default 0.4]
         sl_pct (float):             stop loss %                        [default 1.5]
         tp_rr (float):              take profit R:R ratio              [default 2.0]
-        leverage (int):             futures leverage                   [default 10]
+        leverage (int):             futures leverage — bestimmt die Liquidations-
+                                     distanz (~100/leverage %) und die benoetigte
+                                     Margin; zu hoher Hebel kann die Position vor
+                                     dem eigentlichen SL liquidieren            [default 10]
         risk_per_trade_pct (float): % of start capital at risk (fixed, no compounding within the backtest) [default 1.0]
         max_hold_bars (int):        max bars before forced close       [default 24]
         fee_pct_per_side (float):   taker fee % per fill (Bitget ~0.06) [default 0.06]
@@ -82,6 +93,7 @@ def run_backtest(
     min_hit_rate       = float(params.get('min_hit_rate', 0.4))
     sl_pct             = float(params.get('sl_pct', 1.5))
     tp_rr              = float(params.get('tp_rr', 2.0))
+    leverage           = max(float(params.get('leverage', 10)), 1.0)
     risk_per_trade_pct = float(params.get('risk_per_trade_pct', 1.0))
     max_hold_bars      = int(params.get('max_hold_bars', 24))
     fee_pct_per_side   = float(params.get('fee_pct_per_side', 0.06))
@@ -112,28 +124,39 @@ def run_backtest(
 
         # ── Manage open position ──────────────────────────────────────────────
         if open_pos is not None:
-            direction   = open_pos['direction']
-            entry_price = open_pos['entry_price']
-            sl          = open_pos['sl']
-            tp          = open_pos['tp']
-            risk_amt    = open_pos['risk_amount']
-            bars_held   = i - open_pos['entry_idx']
+            direction      = open_pos['direction']
+            entry_price    = open_pos['entry_price']
+            sl             = open_pos['sl']
+            tp             = open_pos['tp']
+            risk_amt       = open_pos['risk_amount']
+            effective_stop = open_pos['effective_stop']
+            is_liq         = open_pos['is_liquidation']
+            margin         = open_pos['margin_required']
+            bars_held      = i - open_pos['entry_idx']
 
             closed       = False
             close_reason = ''
             pnl          = 0.0
 
             if direction == 'LONG':
-                if low <= sl:
-                    pnl = -risk_amt
-                    closed, close_reason = True, 'SL'
+                if low <= effective_stop:
+                    if is_liq:
+                        pnl = -margin
+                        closed, close_reason = True, 'LIQ'
+                    else:
+                        pnl = -risk_amt
+                        closed, close_reason = True, 'SL'
                 elif high >= tp:
                     pnl = risk_amt * tp_rr
                     closed, close_reason = True, 'TP'
             else:
-                if high >= sl:
-                    pnl = -risk_amt
-                    closed, close_reason = True, 'SL'
+                if high >= effective_stop:
+                    if is_liq:
+                        pnl = -margin
+                        closed, close_reason = True, 'LIQ'
+                    else:
+                        pnl = -risk_amt
+                        closed, close_reason = True, 'SL'
                 elif low <= tp:
                     pnl = risk_amt * tp_rr
                     closed, close_reason = True, 'TP'
@@ -161,6 +184,8 @@ def run_backtest(
                     'close_price':  round(close, 4),
                     'sl':           round(open_pos['sl'], 4),
                     'tp':           round(open_pos['tp'], 4),
+                    'liq_price':    round(open_pos['liq_price'], 4),
+                    'leverage':     open_pos['leverage'],
                     'score':        round(open_pos['score'], 2),
                     'hit_rate':     round(open_pos.get('hit_rate', 0.0), 3),
                     'n_types_signaling': open_pos.get('n_types_signaling', 1),
@@ -204,17 +229,44 @@ def run_backtest(
                 risk_amt  = start_capital * risk_per_trade_pct / 100
                 sl_dist   = close * sl_pct / 100
 
+                # Notional aus Risiko + SL-Abstand ableiten (kein explizites
+                # Contracts-Tracking in diesem R-Multiple-Backtest).
+                notional = risk_amt / (sl_pct / 100) if sl_pct > 0 else 0.0
+                margin_required = notional / leverage
+
+                # Margin-Cap: die fuer diese Positionsgroesse benoetigte Marge
+                # darf einen festen Anteil des Start-Kapitals nicht ueberschreiten
+                # (analog zum Margin-Cap in ltbbot/mbot trade_manager.py). Bei zu
+                # niedrigem Hebel fuer den gewuenschten SL-Abstand wird die
+                # Position (und damit das tatsaechliche Risiko) verkleinert.
+                max_margin = start_capital * MAX_MARGIN_FRACTION
+                if margin_required > max_margin > 0:
+                    scale            = max_margin / margin_required
+                    risk_amt        *= scale
+                    notional        *= scale
+                    margin_required  = max_margin
+
+                # Liquidationsdistanz aus dem Hebel ableiten. Ist sie enger als
+                # der geplante SL-Abstand, liquidiert die Boerse die Position
+                # BEVOR der SL greift — Verlust ist dann die (gedeckelte) Marge
+                # statt des geplanten Risikos, und der Trade wird als 'LIQ'
+                # markiert statt als 'SL'.
+                liq_dist_pct = max(100.0 / leverage - MAINTENANCE_MARGIN_PCT, 0.05)
+                liq_dist     = close * liq_dist_pct / 100
+
                 if direction == 'LONG':
                     sl = close - sl_dist
                     tp = close + sl_dist * tp_rr
+                    liq_price = close - liq_dist
+                    effective_stop = max(sl, liq_price)
+                    is_liquidation = liq_price > sl
                 else:
                     sl = close + sl_dist
                     tp = close - sl_dist * tp_rr
+                    liq_price = close + liq_dist
+                    effective_stop = min(sl, liq_price)
+                    is_liquidation = liq_price < sl
 
-                # Notional aus Risiko + SL-Abstand ableiten (kein explizites
-                # Contracts-Tracking in diesem R-Multiple-Backtest), Fees
-                # (Entry + Exit) daraus vorab bestimmen.
-                notional = risk_amt / (sl_pct / 100) if sl_pct > 0 else 0.0
                 fee_cost = notional * (fee_pct_per_side / 100) * 2
 
                 open_pos = {
@@ -222,6 +274,11 @@ def run_backtest(
                     'entry_price': close,
                     'sl':          sl,
                     'tp':          tp,
+                    'liq_price':   liq_price,
+                    'leverage':    leverage,
+                    'effective_stop': effective_stop,
+                    'is_liquidation': is_liquidation,
+                    'margin_required': margin_required,
                     'direction':   direction,
                     'risk_amount': risk_amt,
                     'move_type':   best_mtype,
@@ -256,6 +313,8 @@ def run_backtest(
             'close_price':  round(last_price, 4),
             'sl':           round(open_pos['sl'], 4),
             'tp':           round(open_pos['tp'], 4),
+            'liq_price':    round(open_pos['liq_price'], 4),
+            'leverage':     open_pos['leverage'],
             'score':        round(open_pos['score'], 2),
             'hit_rate':     round(open_pos.get('hit_rate', 0.0), 3),
             'n_types_signaling': open_pos.get('n_types_signaling', 1),
@@ -289,6 +348,7 @@ def run_backtest(
     total_win  = sum(t['pnl'] for t in wins)
     total_loss = abs(sum(t['pnl'] for t in losses))
     pf         = total_win / total_loss if total_loss > 0 else 999.0
+    n_liq      = sum(1 for t in trades if t['close_reason'] == 'LIQ')
 
     return {
         'n_trades':      n_trades,
@@ -300,5 +360,6 @@ def run_backtest(
         'avg_win':       round(float(np.mean([t['pnl'] for t in wins]))  if wins   else 0, 4),
         'avg_loss':      round(float(np.mean([t['pnl'] for t in losses])) if losses else 0, 4),
         'end_capital':   round(capital, 4),
+        'n_liquidations': n_liq,
         'trades':        trades,
     }

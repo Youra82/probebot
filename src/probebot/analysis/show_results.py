@@ -549,6 +549,7 @@ def _generate_portfolio_equity_chart(portfolio: List[Dict]):
     entry_x, entry_y, entry_txt = [], [], []
     exit_tp_x, exit_tp_y   = [], []
     exit_sl_x, exit_sl_y   = [], []
+    exit_liq_x, exit_liq_y = [], []
     exit_to_x, exit_to_y   = [], []
     for t in all_trades:
         eq_val = t['portfolio_equity_after']
@@ -559,6 +560,8 @@ def _generate_portfolio_equity_chart(portfolio: List[Dict]):
             exit_tp_x.append(t['close_ts']); exit_tp_y.append(eq_val)
         elif cr == 'SL':
             exit_sl_x.append(t['close_ts']); exit_sl_y.append(eq_val)
+        elif cr == 'LIQ':
+            exit_liq_x.append(t['close_ts']); exit_liq_y.append(eq_val)
         else:
             exit_to_x.append(t['close_ts']); exit_to_y.append(eq_val)
 
@@ -575,6 +578,10 @@ def _generate_portfolio_equity_chart(portfolio: List[Dict]):
         fig.add_trace(go.Scatter(x=exit_sl_x, y=exit_sl_y, mode='markers',
             marker=dict(color='#ef4444', symbol='x', size=10, line=dict(width=2, color='#7f1d1d')),
             name='Exit SL ✗'), secondary_y=True)
+    if exit_liq_x:
+        fig.add_trace(go.Scatter(x=exit_liq_x, y=exit_liq_y, mode='markers',
+            marker=dict(color='#ff00ff', symbol='diamond', size=12, line=dict(width=2, color='#7f007f')),
+            name='Exit LIQ ⚠'), secondary_y=True)
     if exit_to_x:
         fig.add_trace(go.Scatter(x=exit_to_x, y=exit_to_y, mode='markers',
             marker=dict(color='#9ca3af', symbol='square', size=8),
@@ -640,7 +647,8 @@ def _generate_trades_excel(portfolio: List[Dict]):
         print(f"  {Y}Keine Trades — Excel übersprungen.{NC}")
         return
 
-    reason_map = {'TP': 'TP erreicht', 'SL': 'SL erreicht', 'TIMEOUT': 'Timeout', 'END': 'Periodenende'}
+    reason_map = {'TP': 'TP erreicht', 'SL': 'SL erreicht', 'LIQ': 'Liquidiert',
+                  'TIMEOUT': 'Timeout', 'END': 'Periodenende'}
     rows = []
     for i, t in enumerate(all_trades, 1):
         rows.append({
@@ -648,6 +656,7 @@ def _generate_trades_excel(portfolio: List[Dict]):
             'Datum':               t['entry_ts'][:16].replace('T', ' '),
             'Coin':                t['coin'],
             'Timeframe':           t['timeframe'],
+            'Hebel':               f"{t.get('leverage', 0):.0f}x",
             'Richtung':            t['direction'],
             'Bewegungstyp':        t.get('move_type', ''),
             'Ergebnis':            reason_map.get(t.get('close_reason', ''), t.get('close_reason', '')),
@@ -663,13 +672,14 @@ def _generate_trades_excel(portfolio: List[Dict]):
     header_fill  = PatternFill('solid', fgColor='1E3A5F')
     win_fill     = PatternFill('solid', fgColor='D6F4DC')
     loss_fill    = PatternFill('solid', fgColor='FAD7D7')
+    liq_fill     = PatternFill('solid', fgColor='F3D6FA')
     timeout_fill = PatternFill('solid', fgColor='FFF3CC')
     alt_fill     = PatternFill('solid', fgColor='F2F2F2')
     thin_border  = Border(left=Side(style='thin', color='CCCCCC'), right=Side(style='thin', color='CCCCCC'),
                            top=Side(style='thin', color='CCCCCC'), bottom=Side(style='thin', color='CCCCCC'))
 
     headers = list(rows[0].keys())
-    col_widths = {'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12, 'Richtung': 10,
+    col_widths = {'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12, 'Hebel': 8, 'Richtung': 10,
                   'Bewegungstyp': 20, 'Ergebnis': 14, 'PnL (USDT)': 14,
                   'Config-Kapital': 16, 'Portfolio-Kapital': 18}
 
@@ -687,6 +697,8 @@ def _generate_trades_excel(portfolio: List[Dict]):
             fill = win_fill
         elif row['Ergebnis'] == 'SL erreicht':
             fill = loss_fill
+        elif row['Ergebnis'] == 'Liquidiert':
+            fill = liq_fill
         else:
             fill = timeout_fill if r_idx % 2 == 0 else alt_fill
         for col, key in enumerate(headers, 1):
