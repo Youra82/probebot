@@ -381,6 +381,273 @@ def mode_3_auto_portfolio():
     inp = input(f"\n  Portfolio in settings.json speichern? (j/n): ").strip().lower()
     if inp in ('j', 'y', 'ja', 'yes'):
         _write_portfolio_to_settings(portfolio)
+        _generate_portfolio_equity_chart(portfolio)
+        _generate_trades_excel(portfolio)
+
+
+def _merge_portfolio_trades(portfolio: List[Dict]) -> List[Dict]:
+    """
+    Fuehrt alle Trades aller Configs chronologisch (nach entry_ts) zusammen und
+    haengt an jeden Trade die laufende Portfolio-Gesamtequity an (Summe der
+    zuletzt bekannten Einzel-Equity jeder Config zu diesem Zeitpunkt) — analog
+    zu dnabots generate_portfolio_equity_chart()/generate_trades_excel().
+    """
+    all_trades = []
+    for res in portfolio:
+        cfg = res['config']
+        sym = cfg['market']['symbol'].split('/')[0]
+        tf  = cfg['market']['timeframe']
+        start_cap = cfg.get('risk', {}).get('start_capital', 100.0)
+        for t in res.get('trades', []):
+            all_trades.append({**t, 'coin': sym, 'timeframe': tf, '_cfg_key': f"{sym}_{tf}",
+                                '_start_capital': start_cap})
+    all_trades.sort(key=lambda t: t['entry_ts'])
+
+    last_equity = {t['_cfg_key']: t['_start_capital'] for t in all_trades}
+    for t in all_trades:
+        last_equity[t['_cfg_key']] = t['capital_after']
+        t['portfolio_equity_after'] = round(sum(last_equity.values()), 4)
+
+    return all_trades
+
+
+def _generate_portfolio_equity_chart(portfolio: List[Dict]):
+    """Kombinierter Portfolio-Equity-Chart (Plotly HTML), wie dnabot run_portfolio_optimizer.py."""
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError:
+        print(f"  {R}plotly nicht installiert — Chart übersprungen.{NC}")
+        return
+
+    all_trades = _merge_portfolio_trades(portfolio)
+    if not all_trades:
+        print(f"  {Y}Keine Trades — Chart übersprungen.{NC}")
+        return
+
+    total_start = sum(r['config'].get('risk', {}).get('start_capital', 100) for r in portfolio)
+
+    PAIR_COLORS = ['#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6',
+                   '#f97316', '#84cc16', '#06b6d4', '#a78bfa', '#eab308', '#22c55e']
+    fig = make_subplots(specs=[[{'secondary_y': True}]])
+
+    for idx, res in enumerate(portfolio):
+        cfg = res['config']
+        sym = cfg['market']['symbol'].split('/')[0]
+        tf  = cfg['market']['timeframe']
+        start_cap = cfg.get('risk', {}).get('start_capital', 100.0)
+        pair_trades = sorted(res.get('trades', []), key=lambda t: t['entry_ts'])
+        ptimes = [pair_trades[0]['entry_ts']] if pair_trades else []
+        pvals  = [start_cap]
+        for t in pair_trades:
+            ptimes.append(t['close_ts'])
+            pvals.append(t['capital_after'])
+        fig.add_trace(go.Scatter(
+            x=ptimes, y=pvals, mode='lines', name=f"{sym}/{tf}",
+            line=dict(color=PAIR_COLORS[idx % len(PAIR_COLORS)], width=1), opacity=0.55,
+        ), secondary_y=False)
+
+    fig.add_hline(y=total_start, line=dict(color='rgba(100,100,100,0.35)', width=1, dash='dash'),
+                  annotation_text=f'Start {total_start:.0f} USDT', annotation_position='top left')
+
+    eq_times = [all_trades[0]['entry_ts']] + [t['close_ts'] for t in all_trades]
+    eq_vals  = [total_start] + [t['portfolio_equity_after'] for t in all_trades]
+
+    entry_x, entry_y, entry_txt = [], [], []
+    exit_tp_x, exit_tp_y   = [], []
+    exit_sl_x, exit_sl_y   = [], []
+    exit_to_x, exit_to_y   = [], []
+    for t in all_trades:
+        eq_val = t['portfolio_equity_after']
+        tip = f"{t['coin']} {t['timeframe']}<br>{t.get('move_type','')}<br>Equity: {eq_val:.2f} USDT"
+        entry_x.append(t['close_ts']); entry_y.append(eq_val); entry_txt.append(tip)
+        cr = t.get('close_reason', '')
+        if cr == 'TP':
+            exit_tp_x.append(t['close_ts']); exit_tp_y.append(eq_val)
+        elif cr == 'SL':
+            exit_sl_x.append(t['close_ts']); exit_sl_y.append(eq_val)
+        else:
+            exit_to_x.append(t['close_ts']); exit_to_y.append(eq_val)
+
+    fig.add_trace(go.Scatter(
+        x=eq_times, y=eq_vals, mode='lines', name='Portfolio Equity',
+        line=dict(color='#2563eb', width=2), opacity=0.85,
+    ), secondary_y=True)
+
+    if exit_tp_x:
+        fig.add_trace(go.Scatter(x=exit_tp_x, y=exit_tp_y, mode='markers',
+            marker=dict(color='#22d3ee', symbol='circle', size=10, line=dict(width=1, color='#0e7490')),
+            name='Exit TP ✓'), secondary_y=True)
+    if exit_sl_x:
+        fig.add_trace(go.Scatter(x=exit_sl_x, y=exit_sl_y, mode='markers',
+            marker=dict(color='#ef4444', symbol='x', size=10, line=dict(width=2, color='#7f1d1d')),
+            name='Exit SL ✗'), secondary_y=True)
+    if exit_to_x:
+        fig.add_trace(go.Scatter(x=exit_to_x, y=exit_to_y, mode='markers',
+            marker=dict(color='#9ca3af', symbol='square', size=8),
+            name='Exit Timeout'), secondary_y=True)
+
+    n = len(all_trades)
+    wins = sum(1 for t in all_trades if t['pnl'] > 0)
+    wr = wins / n if n else 0.0
+    final_equity = eq_vals[-1]
+    pnl_pct = (final_equity - total_start) / total_start * 100 if total_start else 0.0
+    sign = '+' if pnl_pct >= 0 else ''
+    pairs_str = ', '.join(f"{r['config']['market']['symbol'].split('/')[0]}/{r['config']['market']['timeframe']}"
+                           for r in portfolio)
+    title = (f"probebot Portfolio — {len(portfolio)} Coins ({pairs_str}) | Trades: {n} | "
+             f"WR: {wr:.1%} | PnL: {sign}{pnl_pct:.1f}% | Final Equity: {final_equity:.2f} USDT")
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=13), x=0.5, xanchor='center'),
+        height=750, hovermode='x unified', template='plotly_dark', dragmode='zoom',
+        xaxis=dict(rangeslider=dict(visible=True), fixedrange=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+    )
+    fig.update_yaxes(title_text='Einzel-Equity (USDT)', secondary_y=False, fixedrange=False)
+    fig.update_yaxes(title_text='Portfolio-Equity (USDT)', secondary_y=True, fixedrange=False)
+
+    charts_dir = ROOT / 'artifacts' / 'charts'
+    charts_dir.mkdir(parents=True, exist_ok=True)
+    out = charts_dir / 'probebot_portfolio_equity.html'
+    fig.write_html(str(out))
+    print(f"  {G}Portfolio-Chart erstellt: {out}{NC}")
+
+    try:
+        from probebot.utils.telegram import load_telegram_config, send_document
+        secret_path = ROOT.parent / 'secret.json'
+        if not secret_path.exists():
+            secret_path = ROOT / 'secret.json'
+        tg = load_telegram_config(str(secret_path))
+        if tg.get('bot_token'):
+            caption = (f"probebot Portfolio-Equity\n{len(portfolio)} Coins | "
+                       f"PnL: {sign}{pnl_pct:.1f}% | Equity: {final_equity:.2f} USDT")
+            if send_document(tg['bot_token'], tg['chat_id'], str(out), caption=caption):
+                print(f"  {G}Via Telegram gesendet.{NC}")
+            else:
+                print(f"  {R}Telegram-Versand fehlgeschlagen.{NC}")
+        else:
+            print(f"  {Y}Telegram nicht konfiguriert.{NC}")
+    except Exception as e:
+        print(f"  {Y}Telegram-Versand übersprungen: {e}{NC}")
+
+
+def _generate_trades_excel(portfolio: List[Dict]):
+    """Excel-Tabelle aller Portfolio-Trades, wie dnabot run_portfolio_optimizer.py."""
+    try:
+        import openpyxl
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        print(f"  {Y}openpyxl nicht installiert — Excel übersprungen. (pip install openpyxl){NC}")
+        return
+
+    all_trades = _merge_portfolio_trades(portfolio)
+    if not all_trades:
+        print(f"  {Y}Keine Trades — Excel übersprungen.{NC}")
+        return
+
+    reason_map = {'TP': 'TP erreicht', 'SL': 'SL erreicht', 'TIMEOUT': 'Timeout', 'END': 'Periodenende'}
+    rows = []
+    for i, t in enumerate(all_trades, 1):
+        rows.append({
+            'Nr':                  i,
+            'Datum':               t['entry_ts'][:16].replace('T', ' '),
+            'Coin':                t['coin'],
+            'Timeframe':           t['timeframe'],
+            'Richtung':            t['direction'],
+            'Bewegungstyp':        t.get('move_type', ''),
+            'Ergebnis':            reason_map.get(t.get('close_reason', ''), t.get('close_reason', '')),
+            'PnL (USDT)':          t['pnl'],
+            'Config-Kapital':      t['capital_after'],
+            'Portfolio-Kapital':   t['portfolio_equity_after'],
+        })
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Trades'
+
+    header_fill  = PatternFill('solid', fgColor='1E3A5F')
+    win_fill     = PatternFill('solid', fgColor='D6F4DC')
+    loss_fill    = PatternFill('solid', fgColor='FAD7D7')
+    timeout_fill = PatternFill('solid', fgColor='FFF3CC')
+    alt_fill     = PatternFill('solid', fgColor='F2F2F2')
+    thin_border  = Border(left=Side(style='thin', color='CCCCCC'), right=Side(style='thin', color='CCCCCC'),
+                           top=Side(style='thin', color='CCCCCC'), bottom=Side(style='thin', color='CCCCCC'))
+
+    headers = list(rows[0].keys())
+    col_widths = {'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12, 'Richtung': 10,
+                  'Bewegungstyp': 20, 'Ergebnis': 14, 'PnL (USDT)': 14,
+                  'Config-Kapital': 16, 'Portfolio-Kapital': 18}
+
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.fill = header_fill
+        cell.font = Font(bold=True, color='FFFFFF', size=11)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = thin_border
+        ws.column_dimensions[get_column_letter(col)].width = col_widths.get(h, 14)
+    ws.row_dimensions[1].height = 22
+
+    for r_idx, row in enumerate(rows, 2):
+        if row['Ergebnis'] == 'TP erreicht':
+            fill = win_fill
+        elif row['Ergebnis'] == 'SL erreicht':
+            fill = loss_fill
+        else:
+            fill = timeout_fill if r_idx % 2 == 0 else alt_fill
+        for col, key in enumerate(headers, 1):
+            cell = ws.cell(row=r_idx, column=col, value=row[key])
+            cell.fill = fill
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            if key in ('PnL (USDT)', 'Config-Kapital', 'Portfolio-Kapital'):
+                cell.number_format = '#,##0.0000'
+        ws.row_dimensions[r_idx].height = 18
+
+    total_start = sum(r['config'].get('risk', {}).get('start_capital', 100) for r in portfolio)
+    final_equity = rows[-1]['Portfolio-Kapital']
+    pnl_pct = (final_equity - total_start) / total_start * 100 if total_start else 0.0
+    wins = sum(1 for t in all_trades if t['pnl'] > 0)
+    wr = wins / len(all_trades) * 100 if all_trades else 0.0
+
+    summary_row = len(rows) + 3
+    ws.cell(row=summary_row, column=1, value='Zusammenfassung').font = Font(bold=True, size=11)
+    for label, value in [
+        ('Trades gesamt', len(all_trades)),
+        ('Win-Rate', f"{wr:.1f}%"),
+        ('PnL', f"{pnl_pct:+.1f}%"),
+        ('Start-Kapital', f"{total_start:.2f} USDT"),
+        ('Final Equity', f"{final_equity:.2f} USDT"),
+        ('Coins', len(portfolio)),
+    ]:
+        ws.cell(row=summary_row, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=summary_row, column=2, value=value)
+        summary_row += 1
+
+    charts_dir = ROOT / 'artifacts' / 'charts'
+    charts_dir.mkdir(parents=True, exist_ok=True)
+    out = charts_dir / 'probebot_trades.xlsx'
+    wb.save(str(out))
+    print(f"  {G}Excel-Tabelle erstellt: {out}{NC}")
+
+    try:
+        from probebot.utils.telegram import load_telegram_config, send_document
+        secret_path = ROOT.parent / 'secret.json'
+        if not secret_path.exists():
+            secret_path = ROOT / 'secret.json'
+        tg = load_telegram_config(str(secret_path))
+        if tg.get('bot_token'):
+            caption = (f"probebot Trades-Tabelle | {len(portfolio)} Coins | "
+                       f"{len(all_trades)} Trades | WR: {wr:.1f}% | Final: {final_equity:.2f} USDT")
+            if send_document(tg['bot_token'], tg['chat_id'], str(out), caption=caption):
+                print(f"  {G}Via Telegram gesendet.{NC}")
+            else:
+                print(f"  {R}Telegram-Versand fehlgeschlagen.{NC}")
+        else:
+            print(f"  {Y}Telegram nicht konfiguriert.{NC}")
+    except Exception as e:
+        print(f"  {Y}Telegram-Versand übersprungen: {e}{NC}")
 
 
 def _estimate_combined_dd(results: List[Dict]) -> float:
