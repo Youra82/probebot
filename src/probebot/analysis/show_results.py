@@ -45,6 +45,88 @@ def _load_configs() -> List[Dict]:
     return configs
 
 
+def _apply_capital_override(configs: List[Dict], total_override: float = None) -> List[Dict]:
+    """
+    Skaliert das Startkapital jeder Config proportional so, dass die Summe
+    aller Configs total_override ergibt — die relativen Gewichte (aus dem
+    bisherigen risk.start_capital je Config) bleiben erhalten. Da der
+    Backtester die Positionsgroesse als fixen % von start_capital berechnet
+    (siehe backtester.py), aendert eine proportionale Skalierung NUR die
+    absoluten USDT-Betraege (Equity/PnL in USDT) — pnl_pct/win_rate/DD%
+    bleiben identisch, da sich der Skalierungsfaktor in der %-Rechnung
+    kuerzt. Ohne total_override werden die Configs unveraendert zurueckgegeben.
+    """
+    if total_override is None:
+        return configs
+    import copy
+    weights = [c.get('risk', {}).get('start_capital', 100.0) for c in configs]
+    weight_sum = sum(weights)
+    out = []
+    for c, w in zip(configs, weights):
+        c2 = copy.deepcopy(c)
+        c2.setdefault('risk', {})
+        share = (w / weight_sum) if weight_sum > 0 else (1.0 / len(configs))
+        c2['risk']['start_capital'] = round(total_override * share, 4)
+        out.append(c2)
+    return out
+
+
+def _prompt_capital_override(configs: List[Dict]) -> List[Dict]:
+    """Fragt ein Gesamt-Startkapital ab (Enter = Summe der Config-Werte,
+    proportional aufgeteilt nach den bisherigen relativen Gewichten)."""
+    default_total = sum(c.get('risk', {}).get('start_capital', 100.0) for c in configs)
+    raw = input(f"  Gesamt-Startkapital USDT [Standard: {default_total:.0f} = Summe der Configs]: ").strip()
+    if not raw:
+        return configs
+    try:
+        total = float(raw)
+    except ValueError:
+        print(f"  {Y}Ungültige Eingabe, verwende Standard.{NC}")
+        return configs
+    return _apply_capital_override(configs, total)
+
+
+def _rescale_result_capital(res: Dict, new_start_capital: float) -> Dict:
+    """Skaliert ein bereits berechnetes Backtest-Ergebnis auf ein neues
+    Startkapital, ohne den Backtest erneut laufen zu lassen — die
+    Positionsgroesse ist ein fixer % von start_capital, daher skalieren alle
+    USDT-Betraege linear mit (pnl_pct/win_rate/DD% bleiben unveraendert)."""
+    import copy
+    old_start = res['config'].get('risk', {}).get('start_capital', 100.0)
+    if old_start <= 0:
+        return res
+    factor = new_start_capital / old_start
+    res2 = copy.deepcopy(res)
+    res2['config'].setdefault('risk', {})['start_capital'] = new_start_capital
+    res2['end_capital'] = res['end_capital'] * factor
+    for t in res2.get('trades', []):
+        t['pnl'] = round(t['pnl'] * factor, 4)
+        t['capital_after'] = round(t['capital_after'] * factor, 4)
+    return res2
+
+
+def _prompt_capital_override_results(results: List[Dict]) -> List[Dict]:
+    """Wie _prompt_capital_override, aber fuer bereits fertige Backtest-
+    Ergebnisse (Mode 3: Portfolio steht erst NACH der Greedy-Auswahl fest,
+    ein erneuter Backtest waere unnoetig da nur USDT-Betraege skalieren)."""
+    default_total = sum(r['config'].get('risk', {}).get('start_capital', 100.0) for r in results)
+    raw = input(f"  Gesamt-Startkapital USDT [Standard: {default_total:.0f} = Summe der Configs]: ").strip()
+    if not raw:
+        return results
+    try:
+        total = float(raw)
+    except ValueError:
+        print(f"  {Y}Ungültige Eingabe, verwende Standard.{NC}")
+        return results
+    weights = [r['config'].get('risk', {}).get('start_capital', 100.0) for r in results]
+    weight_sum = sum(weights)
+    out = []
+    for r, w in zip(results, weights):
+        share = (w / weight_sum) if weight_sum > 0 else (1.0 / len(results))
+        out.append(_rescale_result_capital(r, total * share))
+    return out
+
+
 def _load_oos_data(config: Dict, start_date: str = None, end_date: str = None):
     """
     Load the full feature df from parquet and slice to OOS period.
@@ -156,6 +238,9 @@ def mode_1_oos_table():
         print(f"\n  {R}Keine Configs gefunden.{NC}")
         print(f"  Erst run_pipeline.sh → Optimizer ausführen.")
         return
+
+    print(f"\n{Y}Kapital:{NC}")
+    configs = _prompt_capital_override(configs)
 
     print(f"\n{Y}Zeitraum:{NC}")
     print(f"  Enter = Standard (30%-OOS-Split je Config, wie im bot_spec gespeichert)")
@@ -284,6 +369,10 @@ def mode_2_portfolio():
         return
 
     chosen = [configs[i] for i in chosen_idxs]
+
+    print(f"\n{Y}Kapital:{NC}")
+    chosen = _prompt_capital_override(chosen)
+
     print(f"\n  Berechne OOS-Backtest für {len(chosen)} Configs...")
 
     all_results = []
@@ -375,6 +464,10 @@ def mode_3_auto_portfolio():
         return
 
     print(f"\n{G}  Portfolio gefunden: {len(portfolio)} Strategien{NC}")
+
+    print(f"\n{Y}Kapital:{NC}")
+    portfolio = _prompt_capital_override_results(portfolio)
+
     _print_portfolio_summary(portfolio)
 
     # Optionally write to settings.json
@@ -726,6 +819,9 @@ def mode_4_charts():
     if not chosen:
         print(f"  {R}Ungültige Auswahl.{NC}")
         return
+
+    print(f"\n{Y}Kapital:{NC}")
+    chosen = _prompt_capital_override(chosen)
 
     from datetime import datetime
     print(f"\n{Y}Zeitraum:{NC}")

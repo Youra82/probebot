@@ -29,6 +29,14 @@ def load_configs() -> List[Dict]:
     return _load_configs()
 
 
+def prompt_capital_override(configs: List[Dict]) -> List[Dict]:
+    """Fragt ein Gesamt-Startkapital ab (Enter = Summe der Config-Werte,
+    proportional aufgeteilt nach den bisherigen relativen Gewichten der
+    Configs). Siehe show_results.py:_prompt_capital_override."""
+    from probebot.analysis.show_results import _prompt_capital_override
+    return _prompt_capital_override(configs)
+
+
 def load_oos_data(config: Dict, start_date: str = None, end_date: str = None):
     """Returns df_oos, split_idx, intrusion_info."""
     from probebot.analysis.show_results import _load_oos_data

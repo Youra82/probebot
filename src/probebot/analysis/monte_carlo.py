@@ -20,7 +20,7 @@ import sys
 
 from probebot.analysis._common import (
     G, Y, R, NC, load_configs, config_name, run_oos_backtest,
-    style_axes, save_send, max_drawdown_from_equity,
+    style_axes, save_send, max_drawdown_from_equity, prompt_capital_override,
 )
 
 
@@ -48,6 +48,10 @@ def main():
     if not configs:
         print(f"  {R}Keine Configs gefunden.{NC}")
         sys.exit(1)
+
+    print(f"{Y}Kapital:{NC}")
+    configs = prompt_capital_override(configs)
+    print()
 
     random.seed(42)
     import matplotlib
@@ -80,17 +84,22 @@ def main():
             final_equities.append(eq)
             max_dds.append(dd)
 
+        equities_sorted = sorted(final_equities)
         pnl_pcts = sorted((e - start_capital) / start_capital * 100 for e in final_equities)
         max_dds_sorted = sorted(max_dds)
         p5  = pnl_pcts[int(0.05 * len(pnl_pcts))]
         p50 = pnl_pcts[int(0.50 * len(pnl_pcts))]
         p95 = pnl_pcts[int(0.95 * len(pnl_pcts))]
+        eq5  = equities_sorted[int(0.05 * len(equities_sorted))]
+        eq50 = equities_sorted[int(0.50 * len(equities_sorted))]
+        eq95 = equities_sorted[int(0.95 * len(equities_sorted))]
         dd95 = max_dds_sorted[int(0.95 * len(max_dds_sorted))]
         ruin = sum(1 for e in final_equities if e < start_capital * 0.5) / args.simulations * 100
         profitable = sum(1 for p in pnl_pcts if p > 0) / args.simulations * 100
 
-        print(f"  {name} ({n_trades} Trades):")
+        print(f"  {name} ({n_trades} Trades, Start: {start_capital:.0f} USDT):")
         print(f"    5. Perzentil: {p5:+.1f}%   Median: {p50:+.1f}%   95. Perzentil: {p95:+.1f}%")
+        print(f"    Endkapital:   {eq5:.0f}    {eq50:.0f}    {eq95:.0f}  USDT")
         print(f"    MaxDD 95. Perzentil: {dd95:.1f}%")
         col_ruin = R if ruin > 10 else Y if ruin > 2 else G
         print(f"    Ruin-Wahrscheinlichkeit (<50%): {col_ruin}{ruin:.1f}%{NC}   "
@@ -122,12 +131,13 @@ def main():
 
         fig.suptitle(
             f'{name} Monte Carlo | {args.simulations:,} Simulationen | {n_trades} Trades | '
-            f'Risk/Trade: {risk_pct}% | Ruin-Wahrsch. (<50%): {ruin:.1f}%',
+            f'Start: {start_capital:.0f} USDT | Risk/Trade: {risk_pct}% | '
+            f'Ruin-Wahrsch. (<50%): {ruin:.1f}%',
             color='white', fontsize=11)
         plt.tight_layout()
 
-        caption = (f"{name}  ({n_trades} Trades)\n"
-                   f"Median: {p50:+.1f}%  |  P5: {p5:+.1f}%  |  P95: {p95:+.1f}%\n"
+        caption = (f"{name}  ({n_trades} Trades, Start: {start_capital:.0f} USDT)\n"
+                   f"Median: {p50:+.1f}%  ({eq50:.0f} USDT)  |  P5: {p5:+.1f}%  |  P95: {p95:+.1f}%\n"
                    f"MaxDD P95: {dd95:.1f}%  |  Ruin: {ruin:.1f}%  |  Profitabel: {profitable:.1f}%")
         safe = name.replace(' ', '_').replace('/', '')
         save_send(fig, f'monte_carlo_{safe}', caption, args.no_telegram)
