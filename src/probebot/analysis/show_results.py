@@ -45,10 +45,19 @@ def _load_configs() -> List[Dict]:
     return configs
 
 
-def _load_oos_data(config: Dict):
+def _load_oos_data(config: Dict, start_date: str = None, end_date: str = None):
     """
-    Load the full feature df from parquet and slice to OOS period (30%).
-    Returns df_oos, split_idx, or (None, None) on error.
+    Load the full feature df from parquet and slice to OOS period.
+
+    Ohne start_date/end_date: Standard-OOS-Slice (df[split_idx:], die 30%
+    die der Optimizer nie gesehen hat).
+
+    Mit start_date/end_date: eigener Zeitraum (z.B. um zu pruefen ob ein
+    Setup seit der Optimierung noch performt). Wird start_date VOR dem
+    gespeicherten split_date gewaehlt, ist ein Teil des Zeitraums nicht
+    mehr "out of sample" — intrusion_info gibt an wie viel.
+
+    Returns df_oos, split_idx, intrusion_info (oder None, None, None bei Fehler).
     """
     import pandas as pd
     sym   = config['market']['symbol'].replace('/', '_').replace(':', '_')
@@ -59,7 +68,7 @@ def _load_oos_data(config: Dict):
     if not data_path.exists():
         print(f"  {R}Daten nicht gefunden: {data_path.name}{NC}")
         print(f"  Erst run_pipeline.sh ausführen.")
-        return None, None
+        return None, None, None
 
     df = pd.read_parquet(data_path)
 
@@ -71,12 +80,36 @@ def _load_oos_data(config: Dict):
         idxs = df[mask].index
         split_idx = int(idxs[0]) if len(idxs) > 0 else int(len(df) * 0.70)
 
-    df_oos = df.iloc[split_idx:].copy().reset_index(drop=True)
-    return df_oos, split_idx
+    if not start_date:
+        df_oos = df.iloc[split_idx:].copy().reset_index(drop=True)
+        return df_oos, split_idx, None
+
+    # ── Eigener Zeitraum ──────────────────────────────────────────────────
+    tz = df['timestamp'].dt.tz
+    start_ts = pd.Timestamp(start_date, tz=tz)
+    mask = df['timestamp'] >= start_ts
+    if end_date:
+        end_ts = pd.Timestamp(end_date, tz=tz) + pd.Timedelta(days=1)
+        mask &= df['timestamp'] < end_ts
+    df_range = df[mask].copy().reset_index(drop=True)
+
+    split_ts = df.iloc[split_idx]['timestamp'] if split_idx < len(df) else df['timestamp'].iloc[-1]
+    intrusion_info = None
+    if start_ts < split_ts:
+        intruded = int((df_range['timestamp'] < split_ts).sum())
+        total = len(df_range)
+        intrusion_info = {
+            'candles': intruded,
+            'total': total,
+            'pct': round(intruded / total * 100, 1) if total else 0.0,
+            'split_date': str(split_ts)[:10],
+        }
+
+    return df_range, split_idx, intrusion_info
 
 
-def _run_oos_backtest(config: Dict) -> Dict | None:
-    """Run backtest on the 30% OOS slice for one config."""
+def _run_oos_backtest(config: Dict, start_date: str = None, end_date: str = None) -> Dict | None:
+    """Run backtest on the OOS slice (Standard-30% oder eigener Zeitraum) fuer eine Config."""
     from probebot.analysis.backtester import run_backtest
 
     bot_spec_path = config.get('strategy', {}).get('bot_spec_path', '')
@@ -98,31 +131,52 @@ def _run_oos_backtest(config: Dict) -> Dict | None:
     params           = {**config.get('signal', {}), **config.get('risk', {})}
     start_capital    = config.get('risk', {}).get('start_capital', 100.0)
 
-    df_oos, split_idx = _load_oos_data(config)
-    if df_oos is None:
+    df_oos, split_idx, intrusion_info = _load_oos_data(config, start_date, end_date)
+    if df_oos is None or len(df_oos) == 0:
         return None
 
     result = run_backtest(df_oos, entry_conditions, tradeable, params, start_capital)
     result['config'] = config
     result['split_date'] = config.get('period', {}).get('split_date', '?')
     result['oos_end']    = config.get('period', {}).get('oos_end', '?')
+    result['intrusion']  = intrusion_info
+    if start_date:
+        result['custom_start'] = start_date
+        result['custom_end']   = end_date or str(df_oos['timestamp'].iloc[-1])[:10]
     return result
 
 
 # ─── Mode 1: OOS-Backtest Tabelle ────────────────────────────────────────────
 
 def mode_1_oos_table():
+    from datetime import datetime
+
     configs = _load_configs()
     if not configs:
         print(f"\n  {R}Keine Configs gefunden.{NC}")
         print(f"  Erst run_pipeline.sh → Optimizer ausführen.")
         return
 
+    print(f"\n{Y}Zeitraum:{NC}")
+    print(f"  Enter = Standard (30%-OOS-Split je Config, wie im bot_spec gespeichert)")
+    print(f"  Oder eigener Zeitraum (z.B. um zu prüfen ob ein Setup seit der")
+    print(f"  Optimierung noch performt — gilt dann für alle Configs gleich)")
+    start_input = input(f"  Start-Datum (YYYY-MM-DD) [Standard: automatisch je Config]: ").strip()
+    custom_range = bool(start_input)
+    end_input = None
+    if custom_range:
+        default_end = datetime.now().strftime('%Y-%m-%d')
+        end_input = input(f"  End-Datum (YYYY-MM-DD) [Standard: {default_end} = heute]: ").strip()
+        end_input = end_input or default_end
+
     print(f"\n{Y}{'─'*90}{NC}")
-    print(f"{Y}  OOS-BACKTEST (30% Test-Periode — nie gesehen während Optimierung){NC}")
+    if custom_range:
+        print(f"{Y}  BACKTEST — eigener Zeitraum: {start_input} → {end_input}{NC}")
+    else:
+        print(f"{Y}  OOS-BACKTEST (30% Test-Periode — nie gesehen während Optimierung){NC}")
     print(f"{Y}{'─'*90}{NC}")
     print(f"  {'Config':<28}  {'Strategie':<10}  {'Trades':>6}  {'WinRate':>7}  "
-          f"{'PnL%':>7}  {'MaxDD%':>7}  {'Sharpe':>7}  {'OOS-Periode'}")
+          f"{'PnL%':>7}  {'MaxDD%':>7}  {'Sharpe':>7}  {'Periode'}")
     print(f"  {'─'*28}  {'─'*10}  {'─'*6}  {'─'*7}  {'─'*7}  {'─'*7}  {'─'*7}  {'─'*20}")
 
     results = []
@@ -132,7 +186,7 @@ def mode_1_oos_table():
         name = f"{sym.split('/')[0]} {tf}"
         strat = cfg.get('strategy', {}).get('type', '?')
         print(f"  Berechne {name}...", end='\r', flush=True)
-        res = _run_oos_backtest(cfg)
+        res = _run_oos_backtest(cfg, start_input if custom_range else None, end_input if custom_range else None)
         if res is None:
             print(f"  {R}{name:<28}  FEHLER{NC}")
             continue
@@ -149,7 +203,10 @@ def mode_1_oos_table():
         pnl_c = G if res['pnl_pct'] >= 0 else R
         dd_c  = R if res['max_drawdown'] > 20 else Y if res['max_drawdown'] > 10 else G
         wr_c  = G if res['win_rate'] >= 50 else Y if res['win_rate'] >= 40 else R
-        period = f"{res['split_date'][:7]} → {res['oos_end'][:7]}"
+        if custom_range:
+            period = f"{res['custom_start'][:7]} → {res['custom_end'][:7]}"
+        else:
+            period = f"{res['split_date'][:7]} → {res['oos_end'][:7]}"
         print(f"  {name:<28}  {strat:<10}  "
               f"{res['n_trades']:>6d}  "
               f"{wr_c}{res['win_rate']:>6.1f}%{NC}  "
@@ -157,9 +214,18 @@ def mode_1_oos_table():
               f"{dd_c}{res['max_drawdown']:>6.1f}%{NC}  "
               f"{res['sharpe']:>7.3f}  "
               f"{period}")
+        if res.get('intrusion'):
+            intr = res['intrusion']
+            print(f"    {R}⚠ {intr['candles']}/{intr['total']} Kerzen ({intr['pct']}%) liegen VOR "
+                  f"dem OOS-Split ({intr['split_date']}) — das sind Trainingsdaten, die der "
+                  f"Optimizer bereits gesehen hat!{NC}")
 
     print(f"\n{Y}{'─'*90}{NC}")
-    print(f"  Hinweis: Diese Ergebnisse basieren auf Daten die der Optimizer NIE gesehen hat.")
+    if custom_range:
+        print(f"  Hinweis: eigener Zeitraum — ⚠-Zeilen markieren Configs bei denen ein Teil")
+        print(f"  des gewählten Zeitraums NICHT mehr 'out of sample' ist (siehe oben).")
+    else:
+        print(f"  Hinweis: Diese Ergebnisse basieren auf Daten die der Optimizer NIE gesehen hat.")
 
     # Show detailed trades if user wants
     inp = input(f"\n  Trades einer Config anzeigen? (Name oder Enter zum Überspringen): ").strip()
@@ -409,7 +475,7 @@ def mode_4_charts():
             print(f"  {R}{name}: Keine OOS-Trades.{NC}")
             continue
 
-        df_oos, _ = _load_oos_data(cfg)
+        df_oos, _, _ = _load_oos_data(cfg)
         if df_oos is None:
             continue
 
