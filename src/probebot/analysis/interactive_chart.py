@@ -45,6 +45,7 @@ def create_chart(
     trades: list,
     stats: dict,
     start_capital: float,
+    intrusion: dict = None,
 ) -> object:
     try:
         import plotly.graph_objects as go
@@ -129,6 +130,27 @@ def create_chart(
                 marker=dict(symbol='square', size=10, color=color),
                 name=label, showlegend=True,
             ), row=1, col=1, secondary_y=False)
+
+    # ── OOS-Split-Intrusion markieren ────────────────────────────────────────
+    # Wird ein eigener Zeitraum gewaehlt der vor dem gespeicherten Split-Datum
+    # beginnt, sind Teile davon keine echten OOS-Daten mehr (der Optimizer hat
+    # sie beim Training bereits gesehen) — dieser Bereich wird rot schraffiert.
+    if intrusion:
+        split_ts = pd.Timestamp(intrusion['split_date'])
+        x0 = ts[0]
+        for r in range(1, 6):
+            fig.add_vrect(
+                x0=x0, x1=split_ts,
+                fillcolor='rgba(239,68,68,0.14)',
+                line=dict(color='rgba(239,68,68,0.6)', width=1, dash='dash'),
+                layer='below', row=r, col=1,
+            )
+        fig.add_annotation(
+            x=split_ts, y=1.0, yref='paper', xref='x',
+            text=f"⚠ {intrusion['pct']}% Trainingsdaten (vor OOS-Split {intrusion['split_date']})",
+            showarrow=False, font=dict(color='#ef5350', size=11),
+            xanchor='right', yanchor='bottom',
+        )
 
     # ── Trade-Marker & SL/TP-Linien ─────────────────────────────────────────
     entry_long_x, entry_long_y, entry_long_txt   = [], [], []

@@ -460,6 +460,19 @@ def mode_4_charts():
         print(f"  {R}Ungültige Auswahl.{NC}")
         return
 
+    from datetime import datetime
+    print(f"\n{Y}Zeitraum:{NC}")
+    print(f"  Enter = Standard (30%-OOS-Split je Config, wie im bot_spec gespeichert)")
+    print(f"  Oder eigener Zeitraum (z.B. um zu prüfen ob ein Setup seit der")
+    print(f"  Optimierung noch performt — gilt dann für alle Configs gleich)")
+    start_input = input(f"  Start-Datum (YYYY-MM-DD) [Standard: automatisch je Config]: ").strip()
+    custom_range = bool(start_input)
+    end_input = None
+    if custom_range:
+        default_end = datetime.now().strftime('%Y-%m-%d')
+        end_input = input(f"  End-Datum (YYYY-MM-DD) [Standard: {default_end} = heute]: ").strip()
+        end_input = end_input or default_end
+
     charts_dir = ROOT / 'artifacts' / 'charts'
     charts_dir.mkdir(parents=True, exist_ok=True)
     generated  = []
@@ -470,21 +483,28 @@ def mode_4_charts():
         name = f"{sym.split('/')[0]} {tf}"
         print(f"\n  Berechne OOS-Backtest: {name}...")
 
-        res = _run_oos_backtest(cfg)
+        s = start_input if custom_range else None
+        e = end_input if custom_range else None
+        res = _run_oos_backtest(cfg, s, e)
         if res is None or not res.get('trades'):
             print(f"  {R}{name}: Keine OOS-Trades.{NC}")
             continue
 
-        df_oos, _, _ = _load_oos_data(cfg)
+        df_oos, _, intrusion_info = _load_oos_data(cfg, s, e)
         if df_oos is None:
             continue
 
         start_cap = cfg.get('risk', {}).get('start_capital', 100.0)
         print(f"  {G}{res['n_trades']} Trades | WR:{res['win_rate']:.1f}% | "
               f"PnL:{res['pnl_pct']:+.1f}% | DD:{res['max_drawdown']:.1f}%{NC}")
+        if intrusion_info:
+            print(f"  {R}⚠ {intrusion_info['candles']}/{intrusion_info['total']} Kerzen "
+                  f"({intrusion_info['pct']}%) liegen VOR dem OOS-Split "
+                  f"({intrusion_info['split_date']}) — das sind Trainingsdaten, die der "
+                  f"Optimizer bereits gesehen hat! Wird im Chart rot markiert.{NC}")
         print(f"  Erstelle Chart...")
 
-        fig = create_chart(sym, tf, df_oos, res['trades'], res, start_cap)
+        fig = create_chart(sym, tf, df_oos, res['trades'], res, start_cap, intrusion=intrusion_info)
         if fig is None:
             continue
 
