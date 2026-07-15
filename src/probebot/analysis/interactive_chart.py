@@ -108,6 +108,15 @@ def create_chart(
         decreasing_line_color='#ef5350',
         showlegend=True,
     ), row=1, col=1, secondary_y=False)
+    # Einzelne fehlerhafte Kerzen (z.B. Datenluecken, siehe README) koennten
+    # das Autorange dominieren und den gesamten echten Kursverlauf auf eine
+    # Linie zusammenquetschen — Achse robust auf 0.5.-99.5. Perzentil von
+    # High/Low begrenzen statt reinem Min/Max.
+    lo = float(df['low'].quantile(0.005))
+    hi = float(df['high'].quantile(0.995))
+    if hi > lo:
+        pad = (hi - lo) * 0.05
+        fig.update_yaxes(range=[lo - pad, hi + pad], row=1, col=1, secondary_y=False)
 
     # ── Trade-Marker & SL/TP-Linien ─────────────────────────────────────────
     entry_long_x, entry_long_y, entry_long_txt   = [], [], []
@@ -219,6 +228,12 @@ def create_chart(
             name='Volumen', showlegend=False, opacity=0.65,
             hovertemplate='Vol: %{y:,.0f}<extra></extra>',
         ), row=2, col=1)
+        # Seltene Ausreisser (z.B. Listing-Spikes) wuerden das Autorange
+        # dominieren und alle normalen Balken auf fast unsichtbar quetschen —
+        # Achse robust auf das 99. Perzentil begrenzen statt reinem Max.
+        vol_p99 = float(df['volume'].quantile(0.99))
+        if vol_p99 > 0:
+            fig.update_yaxes(range=[0, vol_p99 * 1.15], row=2, col=1)
 
     # ── Panel 3: ATR ─────────────────────────────────────────────────────────
     atr_col = next((c for c in ['atr_14', 'atr_7', 'atr_pct'] if c in df.columns), None)
