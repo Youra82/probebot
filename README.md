@@ -13,17 +13,18 @@ wählt automatisch die passende Handelsstrategie und führt live Trades auf Bitg
 2. [Phase 1 — Forensik](#phase-1--forensik)
 3. [Phase 2 — Optimizer](#phase-2--optimizer)
 4. [Phase 3 — OOS Evaluation](#phase-3--oos-evaluation)
-5. [Phase 4 — Live Trading](#phase-4--live-trading)
-6. [Die 70/30-Regel](#die-7030-regel)
-7. [Feature-Katalog (177 Features)](#feature-katalog)
-8. [Bewegungstypen (12 Typen)](#bewegungstypen)
-9. [Handelsstrategien (6 Typen)](#handelsstrategien)
-10. [Projektstruktur](#projektstruktur)
-11. [Installation](#installation)
-12. [Konfiguration](#konfiguration)
-13. [Empfohlene Symbole](#empfohlene-symbole)
-14. [Live-Betrieb & Cron](#live-betrieb--cron)
-15. [Dateien & Artefakte](#dateien--artefakte)
+5. [Phase 3b — Wissenschaftliche Analysen](#phase-3b--wissenschaftliche-analysen)
+6. [Phase 4 — Live Trading](#phase-4--live-trading)
+7. [Die 70/30-Regel](#die-7030-regel)
+8. [Feature-Katalog (177 Features)](#feature-katalog)
+9. [Bewegungstypen (12 Typen)](#bewegungstypen)
+10. [Handelsstrategien (6 Typen)](#handelsstrategien)
+11. [Projektstruktur](#projektstruktur)
+12. [Installation](#installation)
+13. [Konfiguration](#konfiguration)
+14. [Empfohlene Symbole](#empfohlene-symbole)
+15. [Live-Betrieb & Cron](#live-betrieb--cron)
+16. [Dateien & Artefakte](#dateien--artefakte)
 
 ---
 
@@ -374,6 +375,42 @@ Equity-Kurven-Charts erstellen und per Telegram senden.
 
 ---
 
+## Phase 3b — Wissenschaftliche Analysen
+
+**Befehl:** `bash run_analysis.sh` (optional `--no-telegram` für rein lokale Charts ohne Versand)
+
+20 statistische Analysen, alle auf den echten OOS-Configs (`src/probebot/strategy/configs/`)
+und deren OOS-Bewegungsdaten — kein Blick auf Trainingsdaten. Interaktive Auswahl per Menü
+(`0` führt alle 20 nacheinander aus).
+
+| # | Analyse | Priorität |
+|---|---------|-----------|
+| 1 | Walk-Forward Stabilitätstest | Fundament |
+| 2 | Slippage & Fee Impact | Fundament |
+| 3 | Monte Carlo Simulation (Bootstrap) | Fundament |
+| 4 | Bootstrap Signifikanztest | Fundament |
+| 5 | RR-Ratio Sweep | Gewinnoptimierung |
+| 6 | Score-Threshold Sweep | Gewinnoptimierung |
+| 7 | Stop-Loss % Sweep | Gewinnoptimierung |
+| 8 | Parameter Sensitivity (Tornado-Diagramm) | Gewinnoptimierung |
+| 9 | Multi-Symbol Signal-Konfluenz | Systemverbesserung |
+| 10 | Signal-Decay-Analyse | Systemverbesserung |
+| 11 | Anti-Korrelations-Portfolio | Systemverbesserung |
+| 12 | Kelly Position Sizing | Systemverbesserung |
+| 13 | Regime Performance Analysis | Feintuning |
+| 14 | Signal-Stärke-Analyse | Feintuning |
+| 15 | Multi-Type Signal-Konfluenz | Feintuning |
+| 16 | Volatilitäts-Filter Optimierung | Feintuning |
+| 17 | Tageszeit-Analyse | Feintuning |
+| 18 | Regime-adaptive Parameter | Feintuning |
+| 19 | Drawdown Duration Analysis | Feintuning |
+| 20 | Split-Punkt-Robustheit | Robustheit |
+
+Jede Analyse erstellt ein Matplotlib-Chart (`artifacts/charts/`) und sendet es optional per
+Telegram (Prompt bei jedem Lauf, außer `--no-telegram` ist gesetzt).
+
+---
+
 ## Phase 4 — Live Trading
 
 **Befehl:** `bash run_live_bot.sh`
@@ -676,6 +713,7 @@ Wird gewählt wenn kein einzelner Ansatz dominiert (Top-2 Scores < 25% auseinand
 probebot/
 |-- run_pipeline.sh              # Interaktiver Pipeline-Starter (Forensik + Optimizer)
 |-- show_results.sh              # OOS Evaluation + Forensik-Viewer (9 Modi)
+|-- run_analysis.sh              # 20 wissenschaftliche Analysen (OOS-Daten)
 |-- run_live_bot.sh              # Live Trading starten
 |-- master_runner.py             # Orchestriert alle aktiven Strategien
 |-- install.sh                   # Erstinstallation
