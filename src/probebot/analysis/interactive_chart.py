@@ -53,7 +53,12 @@ def create_chart(
         print("  [chart] plotly nicht installiert. pip install plotly")
         return None
 
-    ts = pd.to_datetime(df['timestamp']) if 'timestamp' in df.columns else pd.RangeIndex(len(df))
+    # Echter DatetimeIndex statt separater Series (wie dnabot/mbot) — ein
+    # DataFrame mit RangeIndex + Timestamp-Spalte fuehrte bei grossen
+    # Candlestick/Bar-Traces zu leeren Preis-/Volumen-Panels im Browser.
+    if 'timestamp' in df.columns:
+        df = df.set_index(pd.to_datetime(df['timestamp']))
+    ts = df.index
 
     fig = make_subplots(
         rows=5, cols=1,
@@ -91,14 +96,13 @@ def create_chart(
                 fillcolor=_REGIME_FILL[prev_reg],
                 layer='below', line_width=0, row=1, col=1,
             )
-        for label, color in [('TREND', '#26a69a'), ('RANGE', '#ffa726'), ('CHAOS', '#ef5350')]:
-            fig.add_trace(go.Scatter(
-                x=[None], y=[None], mode='markers',
-                marker=dict(symbol='square', size=10, color=color),
-                name=label, showlegend=True,
-            ), row=1, col=1, secondary_y=False)
 
     # ── Panel 1: Candlesticks ────────────────────────────────────────────────
+    # Muss die erste Trace mit echten x-Werten in diesem Subplot sein: eine
+    # Dummy-Legenden-Trace mit x=[None] VOR den echten Datums-Daten liess
+    # Plotly den x-Achsentyp falsch erkennen und quetschte Preis-/Volumen-
+    # Panel im Browser auf einen schmalen Streifen zusammen (Regime-Legende
+    # daher erst NACH dieser Trace hinzufuegen, siehe unten).
     fig.add_trace(go.Candlestick(
         x=ts,
         open=df['open'], high=df['high'],
@@ -117,6 +121,14 @@ def create_chart(
     if hi > lo:
         pad = (hi - lo) * 0.05
         fig.update_yaxes(range=[lo - pad, hi + pad], row=1, col=1, secondary_y=False)
+
+    if 'regime' in df.columns:
+        for label, color in [('TREND', '#26a69a'), ('RANGE', '#ffa726'), ('CHAOS', '#ef5350')]:
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode='markers',
+                marker=dict(symbol='square', size=10, color=color),
+                name=label, showlegend=True,
+            ), row=1, col=1, secondary_y=False)
 
     # ── Trade-Marker & SL/TP-Linien ─────────────────────────────────────────
     entry_long_x, entry_long_y, entry_long_txt   = [], [], []
@@ -205,7 +217,7 @@ def create_chart(
     # ── Equity-Kurve (secondary Y) ───────────────────────────────────────────
     sorted_trades = sorted(trades, key=lambda x: x['entry_ts'])
     if sorted_trades:
-        eq_x = [pd.to_datetime(ts.iloc[0])]
+        eq_x = [ts[0]]
         eq_y = [start_capital]
         for t in sorted_trades:
             eq_x.append(pd.to_datetime(t['close_ts']))
@@ -254,7 +266,7 @@ def create_chart(
         # Signal-Punkte auf ATR
         for t in trades:
             et  = pd.to_datetime(t['entry_ts'])
-            idx = (ts - et).abs().argmin()
+            idx = abs(ts - et).argmin()
             atr_v = float(atr_vals.iloc[idx])
             color = '#26a69a' if t['direction'] == 'LONG' else '#ffa726'
             fig.add_trace(go.Scatter(
