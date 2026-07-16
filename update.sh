@@ -15,6 +15,20 @@ git fetch origin
 echo "3. Setze alle Dateien auf den neuesten Stand zurueck und verwerfe lokale Aenderungen..."
 git reset --hard origin/main
 
+# update.sh ist selbst Teil des Repos und wurde durch den reset --hard soeben
+# ueberschrieben, WAEHREND dieser Lauf noch aktiv ist. Bash liest/puffert das
+# Skript beim Ausfuehren, dadurch koennten alle Zeilen AB HIER noch mit dem
+# ALTEN, vor dem Reset eingelesenen Text laufen, obwohl auf der Platte laengst
+# die neue Version liegt (self-modifying-script-Falle) — Aenderungen an diesem
+# Skript selbst wuerden dadurch immer erst beim naechsten Aufruf wirken, nicht
+# im selben Lauf. Fix: einmalig sauber neu starten, damit der Rest garantiert
+# aus der frischen Datei liest. Alle Schritte oben (Backup/Fetch/Reset) sind
+# idempotent, ein zweiter Durchlauf davon ist harmlos.
+if [ -z "$PROBEBOT_UPDATE_REEXEC" ]; then
+    export PROBEBOT_UPDATE_REEXEC=1
+    exec bash "$0" "$@"
+fi
+
 # 4. Stelle secret.json wieder her
 echo "4. Stelle 'secret.json' aus dem Backup wieder her..."
 cp secret.json.bak secret.json
