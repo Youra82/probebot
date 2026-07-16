@@ -1,0 +1,220 @@
+"""
+test_gpu_parity.py — Korrektheits-Check: gpu_backtester.run_backtest_batch() muss
+fuer jede einzelne Parameter-Kombination EXAKT (innerhalb Fliesskomma-Toleranz)
+dasselbe Ergebnis liefern wie backtester.run_backtest() (die Referenz).
+
+Kein pytest -- eigenstaendig ausfuehrbar, gleiche Konvention wie test_smoke.py.
+Exit-Code 0 = alle Tests bestanden, 1 = mindestens eine Abweichung gefunden.
+
+Ausfuehrung:
+    python test_gpu_parity.py
+"""
+import sys
+import random
+
+sys.path.insert(0, 'src')
+
+import numpy as np
+import pandas as pd
+
+FIELDS_TO_COMPARE = [
+    'n_trades', 'win_rate', 'pnl_pct', 'max_drawdown', 'sharpe',
+    'profit_factor', 'avg_win', 'avg_loss', 'end_capital', 'n_liquidations',
+]
+TOL = 1e-4  # relative/absolute Toleranz -- Fliesskomma-Summierungsreihenfolge
+            # unterscheidet sich zwischen sequenzieller Python-Schleife und Matmul.
+
+
+def build_synthetic_data(n=3000, seed=42, inject_edge_cases=True):
+    """Random-Walk-OHLCV + ein paar synthetische 'Feature'-Spalten mit
+    kontrollierter Verteilung, damit wir die Entry-Conditions selbst bauen
+    koennen (kein Bezug zur echten Feature-Pipeline noetig)."""
+    rng = np.random.default_rng(seed)
+    close = 100 + np.cumsum(rng.standard_normal(n) * 1.5)
+    close = np.abs(close) + 10
+    # bewusst hohe Volatilitaet je Kerze, damit SL/TP/Liquidation im selben Bar
+    # kollidieren koennen (Randfall) statt nur ueber viele Bars verteilt zu sein
+    high = close * (1 + np.abs(rng.standard_normal(n)) * 0.02)
+    low = close * (1 - np.abs(rng.standard_normal(n)) * 0.02)
+    open_ = close + rng.standard_normal(n) * 0.5
+
+    feat_a = rng.standard_normal(n)          # richtungsneutrales Feature
+    feat_b = rng.standard_normal(n) * 2 + 1  # zweites Feature, andere Skala
+    feat_c = rng.standard_normal(n)
+
+    if inject_edge_cases:
+        # NaN-Feature-Werte (muessen wie in compute_signal_score als "nicht
+        # eligible" behandelt werden)
+        nan_idx = rng.choice(n, size=max(5, n // 200), replace=False)
+        feat_a[nan_idx] = np.nan
+        # Datenluecke: close <= 0 -> muss komplett uebersprungen werden
+        gap_idx = rng.choice(n, size=3, replace=False)
+        close[gap_idx] = 0.0
+
+    df = pd.DataFrame({
+        'timestamp': pd.date_range('2022-01-01', periods=n, freq='1h', tz='UTC'),
+        'open': open_, 'high': high, 'low': low, 'close': close,
+        'volume': np.abs(rng.standard_normal(n) * 1e5 + 1e6),
+        'feat_a': feat_a, 'feat_b': feat_b, 'feat_c': feat_c,
+    })
+    return df
+
+
+def build_entry_conditions():
+    """Zwei Move-Types mit ueberlappenden t-Statistik-Werten (fuer Score-
+    Gleichstand-Randfaelle) und unterschiedlicher Bedingungszahl."""
+    entry_conditions = {
+        'IMPULSE_UP': {
+            'must_have': [],
+            'should_have': [
+                {'feature': 'feat_a', 'direction': 'above', 'baseline_avg': 0.0, 't_statistic': 5.0},
+                {'feature': 'feat_b', 'direction': 'above', 'baseline_avg': 1.0, 't_statistic': 3.2},
+                {'feature': 'feat_c', 'direction': 'below', 'baseline_avg': 0.0, 't_statistic': 4.1},
+            ],
+        },
+        'IMPULSE_DOWN': {
+            'must_have': [],
+            'should_have': [
+                {'feature': 'feat_a', 'direction': 'below', 'baseline_avg': 0.0, 't_statistic': 5.0},
+                {'feature': 'feat_c', 'direction': 'above', 'baseline_avg': 0.0, 't_statistic': 3.9},
+            ],
+        },
+    }
+    tradeable_move_types = [
+        {'move_type': 'IMPULSE_UP', 'direction': 'LONG'},
+        {'move_type': 'IMPULSE_DOWN', 'direction': 'SHORT'},
+    ]
+    return entry_conditions, tradeable_move_types
+
+
+def random_params(rng, n):
+    """Zieht n Parameter-Kombinationen ueber exakt denselben Suchraum wie
+    optimizer.py's Optuna trial.suggest_* Aufrufe."""
+    out = []
+    for _ in range(n):
+        out.append({
+            't_threshold': rng.uniform(2.0, 8.0),
+            'min_score': rng.uniform(1.0, 15.0),   # niedriger als Optuna-Range (5-100)
+                                                     # damit im kleinen Synthetik-Datensatz
+                                                     # ueberhaupt genug Trades entstehen
+            'min_hit_rate': rng.uniform(0.2, 0.85),
+            'sl_pct': rng.uniform(0.5, 5.0),
+            'tp_rr': rng.uniform(1.0, 5.0),
+            'leverage': rng.integers(3, 21),        # inkl. Extremfaelle fuer Liquidation
+            'risk_per_trade_pct': rng.uniform(0.5, 3.0),
+            'max_hold_bars': rng.integers(3, 97),
+        })
+    return out
+
+
+def dicts_close(a, b, name, idx):
+    diffs = []
+    for k in FIELDS_TO_COMPARE:
+        va, vb = a.get(k, 0), b.get(k, 0)
+        if isinstance(va, int) and isinstance(vb, int):
+            if va != vb:
+                diffs.append(f"{k}: ref={va} batch={vb}")
+            continue
+        if abs(va - vb) > TOL + TOL * abs(va):
+            diffs.append(f"{k}: ref={va} batch={vb} (diff={abs(va-vb):.6g})")
+    if diffs:
+        print(f"  MISMATCH [{name} #{idx}]: " + " | ".join(diffs))
+        return False
+    return True
+
+
+def main():
+    from probebot.analysis.backtester import run_backtest
+    from probebot.analysis.gpu_backtester import run_backtest_batch, resolve_device
+
+    df = build_synthetic_data()
+    entry_conditions, tradeable = build_entry_conditions()
+
+    ok = True
+
+    # ── Test 1: Einzel-Trial-Identitaet (device=cpu) ─────────────────────────
+    print("Test 1: Einzel-Trial (CPU) ...")
+    fixed_params = {
+        't_threshold': 3.5, 'min_score': 4.0, 'min_hit_rate': 0.3,
+        'sl_pct': 1.5, 'tp_rr': 2.0, 'leverage': 10, 'risk_per_trade_pct': 1.0,
+        'max_hold_bars': 24,
+    }
+    ref = run_backtest(df, entry_conditions, tradeable, fixed_params, start_capital=100.0)
+    device_cpu, reason_cpu = resolve_device('cpu')
+    batch = run_backtest_batch(df, entry_conditions, tradeable, [fixed_params],
+                                start_capital=100.0, device=device_cpu)[0]
+    print(f"  ref n_trades={ref['n_trades']} pnl_pct={ref['pnl_pct']}  |  "
+          f"batch n_trades={batch['n_trades']} pnl_pct={batch['pnl_pct']}")
+    ok &= dicts_close(ref, batch, "single-cpu", 0)
+
+    # ── Test 2: Batch von 200 Zufallsparametern (device=cpu) ────────────────
+    print("\nTest 2: Batch von 200 Zufallsparametern (CPU) ...")
+    rng = np.random.default_rng(7)
+    py_rng = random.Random(7)
+    params_list = random_params(rng, 200)
+
+    refs = [run_backtest(df, entry_conditions, tradeable, p, start_capital=100.0) for p in params_list]
+    batches = run_backtest_batch(df, entry_conditions, tradeable, params_list,
+                                  start_capital=100.0, device=device_cpu)
+
+    n_mismatch = 0
+    n_with_trades = sum(1 for r in refs if r['n_trades'] > 0)
+    n_liq_total = sum(r.get('n_liquidations', 0) for r in refs)
+    for idx, (r, b) in enumerate(zip(refs, batches)):
+        if not dicts_close(r, b, "batch200-cpu", idx):
+            n_mismatch += 1
+    print(f"  {len(params_list)} Trials, {n_with_trades} mit Trades, {n_liq_total} Liquidationen insgesamt")
+    print(f"  Mismatches: {n_mismatch}/{len(params_list)}")
+    ok &= (n_mismatch == 0)
+
+    # ── Test 3: GPU-Parity (falls CUDA verfuegbar) ───────────────────────────
+    device_cuda, reason_cuda = resolve_device('cuda')
+    if device_cuda.type == 'cuda':
+        print(f"\nTest 3: Batch von 200 Zufallsparametern (CUDA: {reason_cuda}) ...")
+        batches_gpu = run_backtest_batch(df, entry_conditions, tradeable, params_list,
+                                          start_capital=100.0, device=device_cuda)
+        n_mismatch_gpu = 0
+        for idx, (r, b) in enumerate(zip(refs, batches_gpu)):
+            if not dicts_close(r, b, "batch200-cuda", idx):
+                n_mismatch_gpu += 1
+        print(f"  Mismatches (CUDA vs. Referenz): {n_mismatch_gpu}/{len(params_list)}")
+        ok &= (n_mismatch_gpu == 0)
+    else:
+        print(f"\nTest 3: uebersprungen ({reason_cuda})")
+
+    # ── Test 4: Erzwungene Liquidationen (Randfall gezielt statt zufaellig) ──
+    print("\nTest 4: Erzwungene Liquidation vs. sichere Konfiguration (CPU) ...")
+    liq_params = []
+    for lev in (30, 40, 50, 60):
+        for slp in (3.0, 4.0, 5.0):
+            liq_params.append({
+                't_threshold': 3.0, 'min_score': 4.0, 'min_hit_rate': 0.3,
+                'sl_pct': slp, 'tp_rr': 2.0, 'leverage': lev,
+                'risk_per_trade_pct': 1.0, 'max_hold_bars': 30,
+            })
+    refs4 = [run_backtest(df, entry_conditions, tradeable, p, start_capital=100.0) for p in liq_params]
+    batches4 = run_backtest_batch(df, entry_conditions, tradeable, liq_params,
+                                   start_capital=100.0, device=device_cpu)
+    n_liq4 = sum(r.get('n_liquidations', 0) for r in refs4)
+    n_mismatch4 = 0
+    for idx, (r, b) in enumerate(zip(refs4, batches4)):
+        if not dicts_close(r, b, "liq-stress-cpu", idx):
+            n_mismatch4 += 1
+    print(f"  {len(liq_params)} Trials (hoher Hebel), {n_liq4} Liquidationen insgesamt")
+    print(f"  Mismatches: {n_mismatch4}/{len(liq_params)}")
+    ok &= (n_mismatch4 == 0)
+    ok &= (n_liq4 > 0)
+    if n_liq4 == 0:
+        print("  WARNUNG: kein einziger Liquidations-Trade ausgeloest — Testdaten pruefen.")
+
+    print("\n" + "=" * 60)
+    if ok:
+        print("ALLE TESTS BESTANDEN")
+    else:
+        print("FEHLGESCHLAGEN — siehe MISMATCH-Zeilen oben")
+    print("=" * 60)
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == '__main__':
+    main()

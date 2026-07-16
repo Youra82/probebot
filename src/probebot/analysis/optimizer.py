@@ -38,6 +38,9 @@ def run_optimizer(
     mode: str = 'best_profit',    # 'strict' | 'best_profit'
     output_dir: str = None,
     force: bool = False,          # True = bereits vorhandene Config überschreiben
+    engine: str = 'vectorized',   # 'vectorized' (gpu_backtester, batched) | 'legacy' (1 Trial/Aufruf)
+    device_pref: str = 'auto',    # 'auto' | 'cpu' | 'cuda' — siehe gpu_backtester.resolve_device()
+    gpu_batch_size: int = 64,     # Trials pro Batch bei engine='vectorized'
 ) -> str | None:
     """
     Optimize signal + risk parameters on the training slice.
@@ -132,33 +135,36 @@ def run_optimizer(
     completed_before = len([t for t in study.trials if t.state.name == 'COMPLETE'])
     counter = [0]
 
-    def objective(trial):
-        params = {
-            't_threshold':        trial.suggest_float('t_threshold', 2.0, 8.0),
-            'min_score':          trial.suggest_float('min_score', 5.0, 100.0),
-            'min_hit_rate':       trial.suggest_float('min_hit_rate', 0.2, 0.85),
-            'sl_pct':             trial.suggest_float('sl_pct', 0.5, 5.0),
-            'tp_rr':              trial.suggest_float('tp_rr', 1.0, 5.0),
-            'leverage':           trial.suggest_int('leverage', 3, 20),
-            'risk_per_trade_pct': trial.suggest_float('risk_per_trade_pct', 0.5, 3.0),
-            'max_hold_bars':      trial.suggest_int('max_hold_bars', 3, 96),
-        }
+    # Suchraum an EINER Stelle definiert — sowohl von objective() (Legacy-Engine,
+    # 1 Trial pro Optuna-Aufruf) als auch vom Batch-ask/tell-Pfad (vectorized-
+    # Engine, siehe unten) verwendet, damit beide garantiert denselben Suchraum
+    # durchsuchen.
+    PARAM_SPACE = {
+        't_threshold':        ('suggest_float', 2.0, 8.0),
+        'min_score':          ('suggest_float', 5.0, 100.0),
+        'min_hit_rate':       ('suggest_float', 0.2, 0.85),
+        'sl_pct':             ('suggest_float', 0.5, 5.0),
+        'tp_rr':              ('suggest_float', 1.0, 5.0),
+        'leverage':           ('suggest_int', 3, 20),
+        'risk_per_trade_pct': ('suggest_float', 0.5, 3.0),
+        'max_hold_bars':      ('suggest_int', 3, 96),
+    }
 
-        result = run_backtest(df_train, entry_conditions, tradeable, params, start_capital)
+    def _suggest_params(trial):
+        return {k: getattr(trial, kind)(k, lo, hi) for k, (kind, lo, hi) in PARAM_SPACE.items()}
 
-        pruned = (
+    def _is_pruned(result):
+        return (
             result['n_trades'] < min_trades
             or result['max_drawdown'] > max_drawdown
             or (mode == 'strict' and result['win_rate'] < min_win_rate)
         )
-        if not pruned:
-            counter[0] += 1
 
+    def _print_progress(attempt):
         # trial.number zaehlt JEDEN Versuch (auch geprunte) — das gibt eine
         # ehrliche Prozentanzeige. counter[0]/n_trials zaehlte vorher nur
         # erfolgreiche Trials im Zaehler, blieb bei vielen Prunings also
         # dauerhaft unter 100%, obwohl Optuna den vollen Trial-Umfang lief.
-        attempt = trial.number + 1
         done_n   = len([t for t in study.trials if t.state.name == 'COMPLETE'])
         pruned_n = len([t for t in study.trials if t.state.name == 'PRUNED'])
         try:
@@ -173,16 +179,60 @@ def run_optimizer(
               f"  Best:{best_s}  ✓{done_n}  ✗{pruned_n}   ",
               end='', flush=True)
 
+    def objective(trial):
+        params = _suggest_params(trial)
+        result = run_backtest(df_train, entry_conditions, tradeable, params, start_capital)
+        pruned = _is_pruned(result)
+        if not pruned:
+            counter[0] += 1
+        _print_progress(trial.number + 1)
         if pruned:
             raise optuna.exceptions.TrialPruned()
-
         return result['pnl_pct']
+
+    # ── Engine waehlen: vectorized (gpu_backtester, viele Trials pro Batch) ──
+    # oder legacy (1 Trial pro Aufruf, wie bisher). Faellt sauber auf legacy
+    # zurueck wenn torch fehlt — backtester.run_backtest() bleibt so oder so
+    # die alleinige Referenz fuer die finale Best-Params-Bestaetigung unten.
+    use_vectorized = False
+    device = None
+    device_reason = ''
+    if engine == 'vectorized':
+        try:
+            from probebot.analysis.gpu_backtester import run_backtest_batch, resolve_device
+            device, device_reason = resolve_device(device_pref)
+            use_vectorized = device is not None
+        except ImportError:
+            device_reason = 'torch nicht installiert'
+        if not use_vectorized:
+            print(f"  [optimizer] Vektorisierte Engine nicht verfuegbar ({device_reason}) "
+                  f"— Fallback auf Legacy-Engine.\n")
 
     print(f"  [{' ' * 40}]   0.0%     0/{n_trials}  Best:      —  ✓0  ✗0   ",
           end='', flush=True)
     interrupted = False
     try:
-        study.optimize(objective, n_trials=n_trials)
+        if use_vectorized:
+            print(f"\n  [optimizer] Vektorisierte Engine: {device_reason}, "
+                  f"Batch-Groesse {gpu_batch_size}")
+            n_remaining = n_trials
+            while n_remaining > 0:
+                batch_n = min(gpu_batch_size, n_remaining)
+                trials = [study.ask() for _ in range(batch_n)]
+                params_batch = [_suggest_params(t) for t in trials]
+                results = run_backtest_batch(df_train, entry_conditions, tradeable,
+                                              params_batch, start_capital, device=device)
+                for trial, result in zip(trials, results):
+                    pruned = _is_pruned(result)
+                    if pruned:
+                        study.tell(trial, state=optuna.trial.TrialState.PRUNED)
+                    else:
+                        counter[0] += 1
+                        study.tell(trial, result['pnl_pct'])
+                    _print_progress(trial.number + 1)
+                n_remaining -= batch_n
+        else:
+            study.optimize(objective, n_trials=n_trials)
     except KeyboardInterrupt:
         interrupted = True
     print()  # Zeilenumbruch nach fertigem Balken
@@ -294,6 +344,14 @@ def main():
     parser.add_argument('--output',     default=None)
     parser.add_argument('--force',      action='store_true',
                         help='Bestehende Config + Optuna-Study löschen und neu optimieren')
+    parser.add_argument('--engine',     default='vectorized', choices=['vectorized', 'legacy'],
+                        help='vectorized = gpu_backtester (viele Trials pro Batch, deutlich '
+                             'schneller); legacy = 1 Trial pro Aufruf wie bisher')
+    parser.add_argument('--device',     default='auto', choices=['auto', 'cpu', 'cuda'],
+                        help='Nur bei --engine vectorized. auto waehlt aktuell CPU (gemessen '
+                             'schneller als CUDA bei diesem Workload, siehe gpu_backtester.py)')
+    parser.add_argument('--gpu_batch_size', type=int, default=64,
+                        help='Trials pro Batch bei --engine vectorized')
     args = parser.parse_args()
 
     print(f"\nProbebot Optimizer")
@@ -323,6 +381,9 @@ def main():
         mode=args.mode,
         output_dir=args.output,
         force=args.force,
+        engine=args.engine,
+        device_pref=args.device,
+        gpu_batch_size=args.gpu_batch_size,
     )
 
 

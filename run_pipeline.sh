@@ -524,12 +524,44 @@ if [[ "$OPT_INPUT" =~ ^[jJyY] ]]; then
     MAXDD="${MAXDD_INPUT:-$DEFAULT_MAXDD}"
 
     echo ""
+    echo -e "${YELLOW}Optimizer-Hardware:${NC}"
+    echo "  vectorized — viele Parameter-Kombinationen gleichzeitig als Tensor-Batch"
+    echo "               (deutlich schneller, benoetigt torch)"
+    echo "  legacy     — 1 Kombination nach der anderen (bisheriges Verhalten)"
+    DEFAULT_ENGINE=$(python3 -c "import json; print(json.load(open('settings.json')).get('optimizer_engine','vectorized'))" 2>/dev/null || echo "vectorized")
+    read -p "Engine [Standard: $DEFAULT_ENGINE]: " ENGINE_INPUT
+    ENGINE_INPUT="${ENGINE_INPUT//[$'\r\n ']/}"
+    OPT_ENGINE="${ENGINE_INPUT:-$DEFAULT_ENGINE}"
+
+    OPT_DEVICE="auto"
+    OPT_GPU_BATCH="64"
+    if [[ "$OPT_ENGINE" == "vectorized" ]]; then
+        echo "  auto — automatisch waehlen (aktuell CPU, siehe gpu_backtester.py: bei"
+        echo "         diesem Workload schneller als CUDA durch Kernel-Launch-Overhead)"
+        echo "  cpu  — erzwinge CPU"
+        echo "  cuda — erzwinge GPU (Fallback auf CPU falls keine CUDA-GPU vorhanden)"
+        DEFAULT_DEVICE=$(python3 -c "import json; print(json.load(open('settings.json')).get('optimizer_device','auto'))" 2>/dev/null || echo "auto")
+        read -p "Device [Standard: $DEFAULT_DEVICE]: " DEVICE_INPUT
+        DEVICE_INPUT="${DEVICE_INPUT//[$'\r\n ']/}"
+        OPT_DEVICE="${DEVICE_INPUT:-$DEFAULT_DEVICE}"
+
+        DEFAULT_GPU_BATCH=$(python3 -c "import json; print(json.load(open('settings.json')).get('optimizer_gpu_batch_size',64))" 2>/dev/null || echo "64")
+        read -p "Batch-Groesse (parallele Trials pro Durchlauf) [Standard: $DEFAULT_GPU_BATCH]: " GPU_BATCH_INPUT
+        GPU_BATCH_INPUT="${GPU_BATCH_INPUT//[$'\r\n ']/}"
+        OPT_GPU_BATCH="${GPU_BATCH_INPUT:-$DEFAULT_GPU_BATCH}"
+    fi
+
+    echo ""
     echo -e "${BLUE}=======================================================${NC}"
     echo -e "  Optimizer-Konfiguration:"
     echo -e "  Trials:       ${GREEN}$TRIALS${NC}"
     echo -e "  Kapital:      ${GREEN}$CAPITAL USDT${NC}"
     echo -e "  Modus:        ${GREEN}$OPT_MODE${NC}"
     echo -e "  Max. DD:      ${GREEN}$MAXDD%${NC}"
+    echo -e "  Engine:       ${GREEN}$OPT_ENGINE${NC}"
+    if [[ "$OPT_ENGINE" == "vectorized" ]]; then
+        echo -e "  Device:       ${GREEN}$OPT_DEVICE${NC}  |  Batch-Groesse: ${GREEN}$OPT_GPU_BATCH${NC}"
+    fi
     echo -e "${BLUE}=======================================================${NC}"
     echo ""
 
@@ -569,6 +601,9 @@ if [[ "$OPT_INPUT" =~ ^[jJyY] ]]; then
             --capital   "$CAPITAL" \
             --max_dd    "$MAXDD" \
             --mode      "$OPT_MODE" \
+            --engine    "$OPT_ENGINE" \
+            --device    "$OPT_DEVICE" \
+            --gpu_batch_size "$OPT_GPU_BATCH" \
             ${OPT_FORCE}
 
         OPT_EXIT=$?
