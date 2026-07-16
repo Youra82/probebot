@@ -538,6 +538,13 @@ if [[ "$OPT_INPUT" =~ ^[jJyY] ]]; then
     read -p "Engine [Standard: $DEFAULT_ENGINE]: " ENGINE_INPUT
     ENGINE_INPUT="${ENGINE_INPUT//[$'\r\n ']/}"
     OPT_ENGINE="${ENGINE_INPUT:-$DEFAULT_ENGINE}"
+    # Tippfehler hier wuerden sonst erst beim ERSTEN von ggf. vielen Optimizer-
+    # Aufrufen als argparse-Fehler auffallen — und dann JEDEN einzelnen
+    # Symbol/Timeframe-Lauf fehlschlagen lassen, statt nur einmal zu fragen.
+    if [[ "$OPT_ENGINE" != "vectorized" && "$OPT_ENGINE" != "legacy" ]]; then
+        echo -e "${RED}Ungueltige Engine '$OPT_ENGINE' — verwende Standard '$DEFAULT_ENGINE'.${NC}"
+        OPT_ENGINE="$DEFAULT_ENGINE"
+    fi
 
     OPT_DEVICE="auto"
     OPT_GPU_BATCH="64"
@@ -550,11 +557,19 @@ if [[ "$OPT_INPUT" =~ ^[jJyY] ]]; then
         read -p "Device [Standard: $DEFAULT_DEVICE]: " DEVICE_INPUT
         DEVICE_INPUT="${DEVICE_INPUT//[$'\r\n ']/}"
         OPT_DEVICE="${DEVICE_INPUT:-$DEFAULT_DEVICE}"
+        if [[ "$OPT_DEVICE" != "auto" && "$OPT_DEVICE" != "cpu" && "$OPT_DEVICE" != "cuda" ]]; then
+            echo -e "${RED}Ungueltiges Device '$OPT_DEVICE' — verwende Standard '$DEFAULT_DEVICE'.${NC}"
+            OPT_DEVICE="$DEFAULT_DEVICE"
+        fi
 
         DEFAULT_GPU_BATCH=$(python3 -c "import json; print(json.load(open('settings.json')).get('optimizer_gpu_batch_size',64))" 2>/dev/null || echo "64")
         read -p "Batch-Groesse (parallele Trials pro Durchlauf) [Standard: $DEFAULT_GPU_BATCH]: " GPU_BATCH_INPUT
         GPU_BATCH_INPUT="${GPU_BATCH_INPUT//[$'\r\n ']/}"
         OPT_GPU_BATCH="${GPU_BATCH_INPUT:-$DEFAULT_GPU_BATCH}"
+        if ! [[ "$OPT_GPU_BATCH" =~ ^[0-9]+$ ]] || [ "$OPT_GPU_BATCH" -lt 1 ]; then
+            echo -e "${RED}Ungueltige Batch-Groesse '$OPT_GPU_BATCH' — verwende Standard '$DEFAULT_GPU_BATCH'.${NC}"
+            OPT_GPU_BATCH="$DEFAULT_GPU_BATCH"
+        fi
     fi
 
     echo ""
