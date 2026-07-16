@@ -373,8 +373,7 @@ def mode_2_portfolio():
     print(f"\n{Y}Kapital:{NC}")
     chosen = _prompt_capital_override(chosen)
 
-    print(f"\n  Berechne OOS-Backtest für {len(chosen)} Configs...")
-
+    print(f"\n  Berechne isolierte OOS-Backtests für {len(chosen)} Configs (Referenz)...")
     all_results = []
     for cfg in chosen:
         res = _run_oos_backtest(cfg)
@@ -384,33 +383,39 @@ def mode_2_portfolio():
     if not all_results:
         return
 
-    # Combine equity curves (proportional to start_capital)
-    _print_portfolio_summary(all_results)
+    print(f"  Simuliere echtes Portfolio (gemeinsames Kapital, gemeinsames Positions-Limit)...")
+    from probebot.analysis.portfolio_simulator import run_portfolio_simulation
+    sim = run_portfolio_simulation(chosen)
+    if sim is None:
+        print(f"  {R}Portfolio-Simulation fehlgeschlagen (keine Daten).{NC}")
+        return
+
+    _print_portfolio_summary(all_results, sim)
 
 
-def _print_portfolio_summary(results: List[Dict]):
-    """Print combined portfolio stats."""
-    total_start = sum(r['config'].get('risk', {}).get('start_capital', 100) for r in results)
-    total_end   = sum(r['end_capital'] for r in results)
-    combined_pnl = (total_end - total_start) / total_start * 100
-
-    all_trades = []
-    for r in results:
-        for t in r.get('trades', []):
-            all_trades.append(t)
-    all_trades.sort(key=lambda t: t['entry_ts'])
-
-    total_trades = sum(r['n_trades'] for r in results)
-    wins = sum(1 for r in results for t in r.get('trades', []) if t['pnl'] > 0)
-    wr   = wins / total_trades * 100 if total_trades > 0 else 0
-
+def _print_portfolio_summary(results: List[Dict], sim: Dict):
+    """Print combined portfolio stats — sim = echtes Ergebnis von
+    portfolio_simulator.run_portfolio_simulation() (gemeinsames Kapital,
+    gemeinsames max_open_positions-Limit, wie der Live-Bot). `results` bleibt
+    nur fuer die "Einzel-PnL (isoliert)"-Vergleichsliste (jede Config mit
+    eigenem, nie konkurrierendem Kapital — NICHT direkt mit der kombinierten
+    Zeile vergleichbar, siehe Hinweis unten)."""
     print(f"\n{Y}{'─'*60}{NC}")
-    print(f"  PORTFOLIO (OOS 30%):")
-    print(f"  Strategies:     {len(results)}")
-    print(f"  Total Trades:   {total_trades}")
-    print(f"  Win-Rate:       {wr:.1f}%")
-    print(f"  Combined PnL:   {G if combined_pnl >= 0 else R}{combined_pnl:+.2f}%{NC}")
-    print(f"  Einzel-PnL:")
+    print(f"  PORTFOLIO (OOS 30%, echte Simulation — gemeinsames Kapital):")
+    print(f"  Strategies:     {len(sim['configs'])}")
+    print(f"  Max. Positionen gleichzeitig: {sim['max_open_positions']}  (Tie-Break: {sim['tie_break']})")
+    print(f"  Total Trades:   {sim['n_trades']}")
+    print(f"  Win-Rate:       {sim['win_rate']:.1f}%")
+    print(f"  Combined PnL:   {G if sim['pnl_pct'] >= 0 else R}{sim['pnl_pct']:+.2f}%{NC}")
+    print(f"  Max Drawdown:   {sim['max_drawdown']:.1f}%  (realized-only: {sim['max_drawdown_realized_only']:.1f}%)")
+    print(f"  Start → Ende:   {sim['start_capital']:.2f} → {sim['end_capital']:.2f} USDT")
+    n_skip = sim['n_signals_skipped_slot_limit'] + sim['n_signals_skipped_capital']
+    if n_skip:
+        print(f"  {Y}Signale übersprungen: {n_skip}  "
+              f"(Positions-Limit: {sim['n_signals_skipped_slot_limit']}, "
+              f"Kapital: {sim['n_signals_skipped_capital']}){NC}")
+    print(f"  Einzel-PnL (isoliert, eigenes nie konkurrierendes Kapital — ")
+    print(f"  NICHT direkt mit der kombinierten Zeile oben vergleichbar):")
     for r in results:
         sym = r['config']['market']['symbol'].split('/')[0]
         tf  = r['config']['market']['timeframe']
@@ -434,7 +439,7 @@ def mode_3_auto_portfolio():
     except ValueError:
         max_dd = 20.0
 
-    print(f"\n  Berechne OOS-Backtest für alle {len(configs)} Configs...")
+    print(f"\n  Berechne isolierte OOS-Backtests für alle {len(configs)} Configs (Vorauswahl)...")
     all_results = []
     for cfg in configs:
         res = _run_oos_backtest(cfg)
@@ -448,15 +453,33 @@ def mode_3_auto_portfolio():
     # Sort by PnL descending
     all_results.sort(key=lambda r: r['pnl_pct'], reverse=True)
 
-    # Greedy: add strategies while combined DD stays under limit
+    # Greedy: Configs nur aufnehmen wenn eine ECHTE Portfolio-Simulation
+    # (gemeinsames Kapital, gemeinsames Positions-Limit — wie der Live-Bot)
+    # mit ihr zusammen weiterhin den DD-Constraint einhaelt. Legs werden
+    # einmal vorgeladen (_prepare_leg liest Config/bot_spec/Parquet von der
+    # Platte) statt bei jedem der bis zu ~N(N+1)/2 Probe-Schritte neu.
+    from probebot.analysis.portfolio_simulator import _prepare_leg, _simulate
+    print(f"  Lade Daten für Greedy-Auswahl...")
+    legs_by_result_id = {}
+    for res in all_results:
+        leg = _prepare_leg(res['config'])
+        if leg is not None:
+            legs_by_result_id[id(res)] = leg
+
+    print(f"  Greedy-Auswahl (echte Portfolio-Simulation je Kandidat)...")
     portfolio = []
+    sim = None
     for res in all_results:
         if res['max_drawdown'] > max_dd:
             continue  # individual DD already too high
-        trial = portfolio + [res]
-        combined_dd = _estimate_combined_dd(trial)
-        if combined_dd <= max_dd:
+        leg = legs_by_result_id.get(id(res))
+        if leg is None:
+            continue
+        trial_legs = [legs_by_result_id[id(r)] for r in portfolio] + [leg]
+        trial_sim = _simulate(trial_legs)
+        if trial_sim['max_drawdown'] <= max_dd:
             portfolio.append(res)
+            sim = trial_sim
 
     if not portfolio:
         print(f"\n  {R}Kein Portfolio gefunden das DD ≤ {max_dd}% einhält.{NC}")
@@ -467,44 +490,23 @@ def mode_3_auto_portfolio():
 
     print(f"\n{Y}Kapital:{NC}")
     portfolio = _prompt_capital_override_results(portfolio)
+    # Kapital-Override skaliert nur config['risk']['start_capital'] je Result
+    # (siehe _rescale_result_capital) — Simulation mit der ggf. neu skalierten
+    # Kapitalverteilung neu laufen lassen (billig: nur die finalen N Legs).
+    from probebot.analysis.portfolio_simulator import run_portfolio_simulation
+    sim = run_portfolio_simulation([r['config'] for r in portfolio])
 
-    _print_portfolio_summary(portfolio)
+    _print_portfolio_summary(portfolio, sim)
 
     # Optionally write to settings.json
     inp = input(f"\n  Portfolio in settings.json speichern? (j/n): ").strip().lower()
     if inp in ('j', 'y', 'ja', 'yes'):
         _write_portfolio_to_settings(portfolio)
-        _generate_portfolio_equity_chart(portfolio)
-        _generate_trades_excel(portfolio)
+        _generate_portfolio_equity_chart(portfolio, sim)
+        _generate_trades_excel(portfolio, sim)
 
 
-def _merge_portfolio_trades(portfolio: List[Dict]) -> List[Dict]:
-    """
-    Fuehrt alle Trades aller Configs chronologisch (nach entry_ts) zusammen und
-    haengt an jeden Trade die laufende Portfolio-Gesamtequity an (Summe der
-    zuletzt bekannten Einzel-Equity jeder Config zu diesem Zeitpunkt) — analog
-    zu dnabots generate_portfolio_equity_chart()/generate_trades_excel().
-    """
-    all_trades = []
-    for res in portfolio:
-        cfg = res['config']
-        sym = cfg['market']['symbol'].split('/')[0]
-        tf  = cfg['market']['timeframe']
-        start_cap = cfg.get('risk', {}).get('start_capital', 100.0)
-        for t in res.get('trades', []):
-            all_trades.append({**t, 'coin': sym, 'timeframe': tf, '_cfg_key': f"{sym}_{tf}",
-                                '_start_capital': start_cap})
-    all_trades.sort(key=lambda t: t['entry_ts'])
-
-    last_equity = {t['_cfg_key']: t['_start_capital'] for t in all_trades}
-    for t in all_trades:
-        last_equity[t['_cfg_key']] = t['capital_after']
-        t['portfolio_equity_after'] = round(sum(last_equity.values()), 4)
-
-    return all_trades
-
-
-def _generate_portfolio_equity_chart(portfolio: List[Dict]):
+def _generate_portfolio_equity_chart(portfolio: List[Dict], sim: Dict):
     """Kombinierter Portfolio-Equity-Chart (Plotly HTML), wie dnabot run_portfolio_optimizer.py."""
     try:
         import plotly.graph_objects as go
@@ -513,12 +515,12 @@ def _generate_portfolio_equity_chart(portfolio: List[Dict]):
         print(f"  {R}plotly nicht installiert — Chart übersprungen.{NC}")
         return
 
-    all_trades = _merge_portfolio_trades(portfolio)
+    all_trades = sim['trades']
     if not all_trades:
         print(f"  {Y}Keine Trades — Chart übersprungen.{NC}")
         return
 
-    total_start = sum(r['config'].get('risk', {}).get('start_capital', 100) for r in portfolio)
+    total_start = sim['start_capital']
 
     PAIR_COLORS = ['#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6',
                    '#f97316', '#84cc16', '#06b6d4', '#a78bfa', '#eab308', '#22c55e']
@@ -632,7 +634,7 @@ def _generate_portfolio_equity_chart(portfolio: List[Dict]):
         print(f"  {Y}Telegram-Versand übersprungen: {e}{NC}")
 
 
-def _generate_trades_excel(portfolio: List[Dict]):
+def _generate_trades_excel(portfolio: List[Dict], sim: Dict):
     """Excel-Tabelle aller Portfolio-Trades, wie dnabot run_portfolio_optimizer.py."""
     try:
         import openpyxl
@@ -642,7 +644,7 @@ def _generate_trades_excel(portfolio: List[Dict]):
         print(f"  {Y}openpyxl nicht installiert — Excel übersprungen. (pip install openpyxl){NC}")
         return
 
-    all_trades = _merge_portfolio_trades(portfolio)
+    all_trades = sim['trades']
     if not all_trades:
         print(f"  {Y}Keine Trades — Excel übersprungen.{NC}")
         return
@@ -661,7 +663,7 @@ def _generate_trades_excel(portfolio: List[Dict]):
             'Bewegungstyp':        t.get('move_type', ''),
             'Ergebnis':            reason_map.get(t.get('close_reason', ''), t.get('close_reason', '')),
             'PnL (USDT)':          t['pnl'],
-            'Config-Kapital':      t['capital_after'],
+            'Margin (USDT)':       t.get('margin_required', 0),
             'Portfolio-Kapital':   t['portfolio_equity_after'],
         })
 
@@ -681,7 +683,7 @@ def _generate_trades_excel(portfolio: List[Dict]):
     headers = list(rows[0].keys())
     col_widths = {'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12, 'Hebel': 8, 'Richtung': 10,
                   'Bewegungstyp': 20, 'Ergebnis': 14, 'PnL (USDT)': 14,
-                  'Config-Kapital': 16, 'Portfolio-Kapital': 18}
+                  'Margin (USDT)': 16, 'Portfolio-Kapital': 18}
 
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=h)
@@ -706,25 +708,23 @@ def _generate_trades_excel(portfolio: List[Dict]):
             cell.fill = fill
             cell.border = thin_border
             cell.alignment = Alignment(horizontal='center', vertical='center')
-            if key in ('PnL (USDT)', 'Config-Kapital', 'Portfolio-Kapital'):
+            if key in ('PnL (USDT)', 'Margin (USDT)', 'Portfolio-Kapital'):
                 cell.number_format = '#,##0.0000'
         ws.row_dimensions[r_idx].height = 18
-
-    total_start = sum(r['config'].get('risk', {}).get('start_capital', 100) for r in portfolio)
-    final_equity = rows[-1]['Portfolio-Kapital']
-    pnl_pct = (final_equity - total_start) / total_start * 100 if total_start else 0.0
-    wins = sum(1 for t in all_trades if t['pnl'] > 0)
-    wr = wins / len(all_trades) * 100 if all_trades else 0.0
 
     summary_row = len(rows) + 3
     ws.cell(row=summary_row, column=1, value='Zusammenfassung').font = Font(bold=True, size=11)
     for label, value in [
-        ('Trades gesamt', len(all_trades)),
-        ('Win-Rate', f"{wr:.1f}%"),
-        ('PnL', f"{pnl_pct:+.1f}%"),
-        ('Start-Kapital', f"{total_start:.2f} USDT"),
-        ('Final Equity', f"{final_equity:.2f} USDT"),
+        ('Trades gesamt', sim['n_trades']),
+        ('Win-Rate', f"{sim['win_rate']:.1f}%"),
+        ('PnL', f"{sim['pnl_pct']:+.1f}%"),
+        ('Max Drawdown', f"{sim['max_drawdown']:.1f}%"),
+        ('Start-Kapital', f"{sim['start_capital']:.2f} USDT"),
+        ('Final Equity', f"{sim['end_capital']:.2f} USDT"),
         ('Coins', len(portfolio)),
+        ('Max. Positionen gleichzeitig', sim['max_open_positions']),
+        ('Signale übersprungen (Limit/Kapital)',
+         f"{sim['n_signals_skipped_slot_limit']}/{sim['n_signals_skipped_capital']}"),
     ]:
         ws.cell(row=summary_row, column=1, value=label).font = Font(bold=True)
         ws.cell(row=summary_row, column=2, value=value)
@@ -744,7 +744,8 @@ def _generate_trades_excel(portfolio: List[Dict]):
         tg = load_telegram_config(str(secret_path))
         if tg.get('bot_token'):
             caption = (f"probebot Trades-Tabelle | {len(portfolio)} Coins | "
-                       f"{len(all_trades)} Trades | WR: {wr:.1f}% | Final: {final_equity:.2f} USDT")
+                       f"{sim['n_trades']} Trades | WR: {sim['win_rate']:.1f}% | "
+                       f"Final: {sim['end_capital']:.2f} USDT")
             if send_document(tg['bot_token'], tg['chat_id'], str(out), caption=caption):
                 print(f"  {G}Via Telegram gesendet.{NC}")
             else:
@@ -753,13 +754,6 @@ def _generate_trades_excel(portfolio: List[Dict]):
             print(f"  {Y}Telegram nicht konfiguriert.{NC}")
     except Exception as e:
         print(f"  {Y}Telegram-Versand übersprungen: {e}{NC}")
-
-
-def _estimate_combined_dd(results: List[Dict]) -> float:
-    """Simplified combined DD estimate: average of individual DDs."""
-    if not results:
-        return 0.0
-    return sum(r['max_drawdown'] for r in results) / len(results) * 0.7
 
 
 def _write_portfolio_to_settings(results: List[Dict]):
