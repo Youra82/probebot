@@ -49,8 +49,12 @@ echo "6. Setze Ausfuehrungsrechte fuer alle .sh-Skripte..."
 chmod +x *.sh
 
 # 7. Dependencies aktualisieren
+# Kein --quiet: torch ist ein sehr grosses Paket (das Standard-Linux-Wheel
+# buendelt CUDA-Bibliotheken mit, oft 1-3 GB) — ohne sichtbaren Fortschritt
+# (Download-Balken, "Installing collected packages: ...") wirkt ein laenger
+# laufender Download wie ein haengengebliebenes Skript.
 echo "7. Aktualisiere Python-Pakete..."
-.venv/bin/pip install -r requirements.txt --quiet
+.venv/bin/pip install -r requirements.txt
 
 echo ""
 echo "Update erfolgreich abgeschlossen. probebot ist jetzt auf dem neuesten Stand."
