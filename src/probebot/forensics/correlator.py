@@ -20,7 +20,7 @@ from scipy import stats
 from typing import List, Optional
 
 from ..detection.detector import Movement
-from ..features.engine import feature_vector
+from ..features.engine import feature_vector, feature_vectors_bulk
 from .database import ForensicsDB
 
 _MIN_EVENTS = 20          # Skip move types with fewer training events
@@ -91,86 +91,64 @@ class Correlator:
         direction     = movements[0].direction
 
         # ── Feature matrix: events ─────────────────────────────────────────
-        event_features = []
-        for idx in event_indices:
-            fvs = [feature_vector(df, idx - o)
-                   for o in range(1, self.lookback + 1) if idx - o >= 0]
-            if fvs:
-                event_features.append(_average_fvs(fvs))
+        # Bulk statt einem feature_vector()-Aufruf pro (Event, Lookback-Offset) —
+        # war zusammen mit dem Hintergrund-Sampling unten der dominante Kostenpunkt
+        # der gesamten Korrelationsanalyse (siehe _bulk_averaged_feature_vectors()).
+        event_features = [fv for fv in _bulk_averaged_feature_vectors(df, event_indices, self.lookback) if fv]
 
         if not event_features:
             return [], {}
 
         # ── Feature matrix: background (all candles, excluding event windows) ──
-        all_features = []
         event_set = set(event_indices)
         step = max(1, len(df) // 600)
-        for i in range(50, len(df), step):
-            if not any(abs(i - e) <= self.lookback + 2 for e in event_set):
-                all_features.append(feature_vector(df, i))
+        bg_indices = [i for i in range(50, len(df), step)
+                      if not any(abs(i - e) <= self.lookback + 2 for e in event_set)]
+        all_features = feature_vectors_bulk(df, bg_indices) if bg_indices else []
 
         if not all_features:
             return [], {}
 
-        common_keys = set(event_features[0].keys()) & set(all_features[0].keys())
+        common_keys = sorted(set(event_features[0].keys()) & set(all_features[0].keys()))
 
-        # ── Welch t-test + Cohen's d + hit-rate ──────────────────────────────
+        # ── Welch t-test + Cohen's d + hit-rate — vektorisiert ──────────────────
+        # War vorher eine Python-Schleife mit einem eigenen scipy.stats.ttest_ind-
+        # Aufruf PRO Feature (100+ unabhaengige, kleine Berechnungen — strukturell
+        # dasselbe Muster wie der alte Optimizer-Engpass). Jetzt: alle Features
+        # gleichzeitig als (n_events, n_features)/(n_bg, n_features)-Matrizen,
+        # Welch-t-Statistik + Freiheitsgrade + p-Wert per Spalte in einem Rutsch.
+        stats_by_feat = _vectorized_ttests(event_features, all_features, common_keys)
+
         ranked = []
         event_vals_cache = {}
         bg_vals_cache    = {}
 
-        for feat in common_keys:
-            ev = np.array([
-                fv[feat] for fv in event_features
-                if isinstance(fv.get(feat), float) and not np.isnan(fv[feat])
-            ])
-            bg = np.array([
-                fv[feat] for fv in all_features
-                if isinstance(fv.get(feat), float) and not np.isnan(fv[feat])
-            ])
-            if len(ev) < 2 or len(bg) < 2:
-                continue
-            if np.std(ev) < 1e-10 and np.std(bg) < 1e-10:
-                continue
-
-            t_stat, p_val = stats.ttest_ind(ev, bg, equal_var=False)
-            mean_ev  = float(np.mean(ev))
-            std_ev   = float(np.std(ev))
-            mean_bg  = float(np.mean(bg))
-            std_bg   = float(np.std(bg))
-            lift     = (mean_ev - mean_bg) / (abs(mean_bg) + 1e-10)
-            pooled   = np.sqrt((std_ev ** 2 + std_bg ** 2) / 2)
-            cohens_d = (mean_ev - mean_bg) / (pooled + 1e-10)
-
-            threshold = mean_bg + np.sign(t_stat) * std_bg
-            pred_pct  = float(np.mean(ev > threshold) * 100) if t_stat > 0 \
-                   else float(np.mean(ev < threshold) * 100)
-
+        for feat, s in stats_by_feat.items():
             record = {
                 'symbol':          symbol,
                 'timeframe':       timeframe,
                 'move_type':       move_type,
                 'direction':       direction,
                 'feature':         feat,
-                'n_events':        len(ev),
-                'mean_before':     round(mean_ev, 6),
-                'std_before':      round(std_ev, 6),
-                'mean_all':        round(mean_bg, 6),
-                'std_all':         round(std_bg, 6),
-                't_statistic':     round(float(t_stat), 4),
-                'p_value':         round(float(p_val), 6),
-                'cohens_d':        round(float(cohens_d), 4),
-                'lift_factor':     round(float(lift), 4),
-                'predictive_pct':  round(pred_pct, 1),
-                'threshold':       round(float(threshold), 6),
+                'n_events':        s['n_ev'],
+                'mean_before':     round(s['mean_ev'], 6),
+                'std_before':      round(s['std_ev'], 6),
+                'mean_all':        round(s['mean_bg'], 6),
+                'std_all':         round(s['std_bg'], 6),
+                't_statistic':     round(s['t_stat'], 4),
+                'p_value':         round(s['p_val'], 6),
+                'cohens_d':        round(s['cohens_d'], 4),
+                'lift_factor':     round(s['lift'], 4),
+                'predictive_pct':  round(s['pred_pct'], 1),
+                'threshold':       round(s['threshold'], 6),
                 'hit_rate_ci_low': 0.0,
                 'hit_rate_ci_high':0.0,
             }
             ranked.append(record)
-            event_vals_cache[feat] = ev
-            bg_vals_cache[feat]    = bg
+            event_vals_cache[feat] = s['ev']
+            bg_vals_cache[feat]    = s['bg']
 
-            if abs(t_stat) >= 1.5:
+            if abs(s['t_stat']) >= 1.5:
                 self.db.upsert_commonality(record)
 
         ranked.sort(key=lambda r: abs(r['t_statistic']), reverse=True)
@@ -393,10 +371,7 @@ class Correlator:
         if len(movements) < n_clusters:
             n_clusters = max(1, len(movements) // 2)
 
-        fvs = []
-        for m in movements:
-            vecs = [feature_vector(df, m.idx - o) for o in range(1, 6) if m.idx - o >= 0]
-            fvs.append(_average_fvs(vecs) if vecs else {})
+        fvs = _bulk_averaged_feature_vectors(df, [m.idx for m in movements], 5)
 
         if not fvs:
             return {}
@@ -459,6 +434,42 @@ class Correlator:
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+def _bulk_averaged_feature_vectors(df: pd.DataFrame, indices: List[int], lookback: int) -> List[dict]:
+    """
+    Fuer jeden Index in `indices`: Feature-Vektor gemittelt ueber die `lookback`
+    Kerzen davor (idx-1 .. idx-lookback) — via EINEM feature_vectors_bulk()-Aufruf
+    fuer alle benoetigten Zeilen zusammen, statt einem feature_vector()-Einzel-
+    aufruf pro (Event, Offset)-Paar. War (zusammen mit dem Hintergrund-Sampling
+    in _analyze_type()) der mit Abstand teuerste Teil der Korrelationsanalyse —
+    nicht die Statistik selbst (siehe _vectorized_ttests()).
+
+    Gibt eine Liste zurueck, EIN Eintrag pro Element in `indices` (leeres dict
+    {} wenn kein einziger Offset gueltig war, z.B. idx zu nah am Datenanfang) —
+    Aufrufer die leere Eintraege ueberspringen wollen, filtern selbst per
+    `if fv:` (wie zuvor per `if fvs: append(...)`).
+    """
+    pairs = []  # (Position in `indices`, tatsaechlicher df-Zeilenindex)
+    for pos, idx in enumerate(indices):
+        for o in range(1, lookback + 1):
+            if idx - o >= 0:
+                pairs.append((pos, idx - o))
+
+    result = [{} for _ in indices]
+    if not pairs:
+        return result
+
+    bulk_fvs = feature_vectors_bulk(df, [p[1] for p in pairs])
+
+    grouped: dict = {}
+    for (pos, _), fv in zip(pairs, bulk_fvs):
+        grouped.setdefault(pos, []).append(fv)
+
+    for pos, fvs in grouped.items():
+        result[pos] = _average_fvs(fvs)
+
+    return result
+
+
 def _average_fvs(vectors: List[dict]) -> dict:
     if not vectors:
         return {}
@@ -473,15 +484,86 @@ def _average_fvs(vectors: List[dict]) -> dict:
 
 def _bootstrap_hit_ci(event_vals: np.ndarray, threshold: float, t_stat: float,
                        n: int = 200) -> tuple:
-    """Bootstrap 90% CI for hit-rate."""
-    hit_rates = []
+    """Bootstrap 90% CI for hit-rate. Ein (n, size)-Draw statt n Einzelaufrufen
+    von np.random.choice — dieselbe Resampling-Verteilung, nur vektorisiert."""
     size = len(event_vals)
-    for _ in range(n):
-        sample = np.random.choice(event_vals, size=size, replace=True)
-        if t_stat > 0:
-            hit = float(np.mean(sample > threshold) * 100)
-        else:
-            hit = float(np.mean(sample < threshold) * 100)
-        hit_rates.append(hit)
-    arr = np.array(hit_rates)
-    return round(float(np.percentile(arr, 5)), 1), round(float(np.percentile(arr, 95)), 1)
+    samples = np.random.choice(event_vals, size=(n, size), replace=True)
+    if t_stat > 0:
+        hit_rates = np.mean(samples > threshold, axis=1) * 100
+    else:
+        hit_rates = np.mean(samples < threshold, axis=1) * 100
+    return (round(float(np.percentile(hit_rates, 5)), 1),
+            round(float(np.percentile(hit_rates, 95)), 1))
+
+
+def _vectorized_ttests(event_features: List[dict], all_features: List[dict],
+                        feat_list: List[str]) -> dict:
+    """
+    Welch's t-test + Cohen's d + hit-rate fuer ALLE Features gleichzeitig statt
+    einer Python-Schleife mit einem scipy.stats.ttest_ind()-Aufruf pro Feature.
+
+    Repliziert _analyze_type()'s alte Pro-Feature-Logik exakt, inkl. der beiden
+    unterschiedlichen Standardabweichungs-Definitionen die dort verwendet wurden:
+      - std_ev/std_bg (reportiert + fuer Cohen's d): np.std() mit ddof=0
+        (Populations-Standardabweichung).
+      - Die interne Varianz der Welch-t-Statistik: scipy.stats.ttest_ind nutzt
+        dafuer ddof=1 (Stichproben-Varianz) — hier per np.nanvar(..., ddof=1)
+        nachgebildet, mit Welch-Satterthwaite-Freiheitsgraden fuer den p-Wert.
+
+    Returns: dict[feature] -> {t_stat, p_val, mean_ev, std_ev, mean_bg, std_bg,
+    cohens_d, lift, threshold, pred_pct, n_ev, ev (array), bg (array)} — nur
+    fuer Features die die Mindest-Kriterien erfuellen (>=2 Werte je Seite,
+    nicht beide Seiten quasi-konstant), wie im Original.
+    """
+    ev_df = pd.DataFrame(event_features).reindex(columns=feat_list)
+    bg_df = pd.DataFrame(all_features).reindex(columns=feat_list)
+    ev_mat = ev_df.apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float)
+    bg_mat = bg_df.apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float)
+
+    n_ev = np.sum(~np.isnan(ev_mat), axis=0)
+    n_bg = np.sum(~np.isnan(bg_mat), axis=0)
+
+    with np.errstate(invalid='ignore', divide='ignore'):
+        mean_ev = np.nanmean(ev_mat, axis=0)
+        mean_bg = np.nanmean(bg_mat, axis=0)
+        std_ev  = np.nanstd(ev_mat, axis=0, ddof=0)   # reportiert + Cohen's d
+        std_bg  = np.nanstd(bg_mat, axis=0, ddof=0)
+        var_ev1 = np.nanvar(ev_mat, axis=0, ddof=1)   # fuer Welch-t-Statistik
+        var_bg1 = np.nanvar(bg_mat, axis=0, ddof=1)
+
+        se = np.sqrt(var_ev1 / n_ev + var_bg1 / n_bg)
+        t_stat = (mean_ev - mean_bg) / se
+
+        num = (var_ev1 / n_ev + var_bg1 / n_bg) ** 2
+        den = (var_ev1 / n_ev) ** 2 / (n_ev - 1) + (var_bg1 / n_bg) ** 2 / (n_bg - 1)
+        dof = num / den
+        p_val = 2.0 * stats.t.sf(np.abs(t_stat), dof)
+
+        lift     = (mean_ev - mean_bg) / (np.abs(mean_bg) + 1e-10)
+        pooled   = np.sqrt((std_ev ** 2 + std_bg ** 2) / 2)
+        cohens_d = (mean_ev - mean_bg) / (pooled + 1e-10)
+        threshold = mean_bg + np.sign(t_stat) * std_bg
+
+    valid = (n_ev >= 2) & (n_bg >= 2) & ~((std_ev < 1e-10) & (std_bg < 1e-10))
+
+    out = {}
+    for j, feat in enumerate(feat_list):
+        if not valid[j]:
+            continue
+        ev_col = ev_mat[:, j]
+        ev_clean = ev_col[~np.isnan(ev_col)]
+        bg_col = bg_mat[:, j]
+        bg_clean = bg_col[~np.isnan(bg_col)]
+        t = float(t_stat[j])
+        thr = float(threshold[j])
+        pred_pct = float(np.mean(ev_clean > thr) * 100) if t > 0 \
+            else float(np.mean(ev_clean < thr) * 100)
+        out[feat] = {
+            't_stat': t, 'p_val': float(p_val[j]),
+            'mean_ev': float(mean_ev[j]), 'std_ev': float(std_ev[j]),
+            'mean_bg': float(mean_bg[j]), 'std_bg': float(std_bg[j]),
+            'cohens_d': float(cohens_d[j]), 'lift': float(lift[j]),
+            'threshold': thr, 'pred_pct': pred_pct,
+            'n_ev': int(n_ev[j]), 'ev': ev_clean, 'bg': bg_clean,
+        }
+    return out

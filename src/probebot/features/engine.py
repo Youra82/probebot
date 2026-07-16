@@ -76,9 +76,37 @@ def feature_vector(df: pd.DataFrame, idx: int) -> dict:
         val = row[col]
         if isinstance(val, (int, float, np.integer, np.floating)):
             result[col] = float(val)
-        elif isinstance(val, bool):
+        elif isinstance(val, (bool, np.bool_)):
+            # np.bool_ (was df.iloc[idx] fuer bool-Spalten liefert) ist KEINE
+            # Unterklasse von Python bool — ohne np.bool_ wurden bool-Feature-
+            # Spalten (z.B. swing_low/high, bb_squeeze, kc_squeeze) hier bisher
+            # komplett stillschweigend verworfen, nie Teil irgendeiner
+            # Korrelations-/Forensik-Analyse.
             result[col] = float(val)
     return result
+
+
+def feature_vectors_bulk(df: pd.DataFrame, indices: list) -> list:
+    """
+    Wie feature_vector(), aber fuer viele Indizes auf einmal.
+
+    feature_vector() macht pro Aufruf einen eigenen df.iloc[idx]-Zugriff plus
+    eine Python-Schleife ueber alle Spalten — bei vielen Indizes (z.B. correlator.py's
+    Event-/Hintergrund-Stichproben, oft tausende Aufrufe pro Analyse) ist genau
+    das der dominante Kostenpunkt, nicht die eigentliche Statistik (siehe
+    correlator.py's _vectorized_ttests() docstring). Hier: EIN Bulk-Zugriff via
+    df.iloc[indices] statt vieler Einzelzugriffe, Spaltenfilter per Dtype statt
+    Wert-fuer-Wert-isinstance (fuer die hier durchgehend gleichmaessig typisierten
+    Feature-Spalten aequivalent — per Parity-Test gegen feature_vector() geprueft).
+
+    Reihenfolge der Rueckgabe entspricht der Reihenfolge von `indices`.
+    """
+    skip = {'timestamp', 'open', 'high', 'low', 'close', 'volume'}
+    cols = [c for c in df.columns if c not in skip and (
+        pd.api.types.is_numeric_dtype(df[c]) or pd.api.types.is_bool_dtype(df[c])
+    )]
+    sub = df.iloc[indices][cols].astype(float)
+    return sub.to_dict('records')
 
 
 # ─── Composite Scores ─────────────────────────────────────────────────────────
