@@ -24,6 +24,32 @@ echo -e "       probebot — Market Forensics Pipeline"
 echo -e "${BLUE}=======================================================${NC}"
 echo ""
 
+# ── Kompletter Neustart? ─────────────────────────────────────────────────────
+# Vor JEDER Pipeline-Auswahl (Forensik oder Nur-Optimizer) abgefragt, damit ein
+# sauberer Neustart nicht vom gewaehlten Modus abhaengt.
+echo -e "${YELLOW}Kompletten Neustart? Loescht Forensik-DB, Bot-Specs, Optuna-Studies,${NC}"
+echo -e "${YELLOW}Configs, Charts/Reports (PNG/HTML/XLSX) und Daten-Cache — fuer ALLE${NC}"
+echo -e "${YELLOW}Symbole/Timeframes.${NC}"
+echo -e "${CYAN}(Offene Live-Positionen in artifacts/tracker/ bleiben unberuehrt.)${NC}"
+read -p "Alles zuruecksetzen? (j/n) [Standard: n]: " FULL_RESET
+FULL_RESET="${FULL_RESET//[$'\r\n ']/}"
+if [[ "$FULL_RESET" =~ ^[jJyY] ]]; then
+    rm -f artifacts/db/forensics.db
+    rm -f artifacts/db/optuna_probebot.db
+    rm -f artifacts/db/bot_spec_*.json
+    rm -f artifacts/db/report_*.html
+    rm -f artifacts/data/*.parquet
+    rm -f artifacts/charts/*.png artifacts/charts/*.html artifacts/charts/*.xlsx
+    rm -f docs/*.png
+    rm -f src/probebot/strategy/configs/config_*.json
+    find . -type f -name "*.pyc" -delete
+    find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
+    echo -e "${GREEN}✔ Kompletter Reset durchgefuehrt — alle Symbole/Timeframes starten bei Null.${NC}"
+else
+    echo -e "${GREEN}✔ Bestehende Ergebnisse werden beibehalten.${NC}"
+fi
+echo ""
+
 # ── Modus-Auswahl ─────────────────────────────────────────────────────────────
 echo -e "${YELLOW}Was moechtest du tun?${NC}"
 echo "  1) Forensik durchfuehren (Phase 1) — neue oder erneute Analyse"
@@ -152,26 +178,6 @@ else
     # LANGER PFAD: Phase 1 (Forensik) + optional Phase 2
     # ═══════════════════════════════════════════════════════════════════════
     RUN_PHASE1="j"
-
-    # ── Kompletter Neustart? ───────────────────────────────────────────────────
-    echo -e "${YELLOW}Kompletten Neustart? Loescht Forensik-DB, Bot-Specs, Optuna-Studies,${NC}"
-    echo -e "${YELLOW}Configs, Reports und Daten-Cache — fuer ALLE Symbole/Timeframes.${NC}"
-    echo -e "${CYAN}(Offene Live-Positionen in artifacts/tracker/ bleiben unberuehrt.)${NC}"
-    read -p "Alles zuruecksetzen? (j/n) [Standard: n]: " FULL_RESET
-    FULL_RESET="${FULL_RESET//[$'\r\n ']/}"
-    if [[ "$FULL_RESET" =~ ^[jJyY] ]]; then
-        rm -f artifacts/db/forensics.db
-        rm -f artifacts/db/optuna_probebot.db
-        rm -f artifacts/db/bot_spec_*.json
-        rm -f artifacts/db/report_*.html
-        rm -f artifacts/data/*.parquet
-        rm -f artifacts/charts/*.png
-        rm -f src/probebot/strategy/configs/config_*.json
-        echo -e "${GREEN}✔ Kompletter Reset durchgefuehrt — alle Symbole/Timeframes starten bei Null.${NC}"
-    else
-        echo -e "${GREEN}✔ Bestehende Ergebnisse werden beibehalten.${NC}"
-    fi
-    echo ""
 
     # ── Symbol(e) ────────────────────────────────────────────────────────────────
     DEFAULT_SYMBOL=$(python3 -c "import json; print(json.load(open('settings.json')).get('symbol','BTC/USDT:USDT'))" 2>/dev/null || echo "BTC/USDT:USDT")
