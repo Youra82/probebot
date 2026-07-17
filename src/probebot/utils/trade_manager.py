@@ -180,6 +180,59 @@ def _detect_close_reason(exchange, tracker: dict, logger: logging.Logger) -> str
     return 'UNKNOWN'
 
 
+# ── Trade-Entry-Chart ──────────────────────────────────────────────────────────
+
+def _send_trade_chart(exchange, symbol: str, timeframe: str, side: str,
+                      entry_price: float, sl_price: float, tp_price,
+                      move_type: str, strategy: str, score: float, hit_rate: float,
+                      n_met: int, n_total: int, sl_source: str, tp_source: str,
+                      telegram_cfg: dict, logger: logging.Logger):
+    """Generiert einen Kerzenchart mit Entry/SL/TP + Signal-Grund (optisch
+    erkennbar: Signal-Kerze hervorgehoben, Referenzlinie fuer den in
+    sl_source/tp_source genannten Feature-Wert) und schickt ihn per Telegram."""
+    if not telegram_cfg or not telegram_cfg.get('bot_token') or not telegram_cfg.get('chat_id'):
+        return
+    path = None
+    try:
+        from probebot.report.charts import trade_entry_chart
+        from probebot.utils.telegram import send_photo
+
+        df = exchange.fetch_recent_ohlcv(symbol, timeframe, limit=50)
+        if df is None or df.empty:
+            logger.warning("Kein OHLCV fuer Trade-Chart verfuegbar.")
+            return
+
+        tmp_dir = PROJECT_ROOT / 'artifacts' / 'tmp'
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        sym_safe = symbol.replace('/', '-').replace(':', '-')
+        ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        path = str(tmp_dir / f'trade_entry_{sym_safe}_{timeframe}_{ts}.png')
+
+        trade_entry_chart(
+            df, symbol, timeframe, side, entry_price, sl_price, tp_price,
+            move_type, strategy, score, hit_rate, n_met, n_total,
+            sl_source, tp_source, out_path=path,
+        )
+        if path and Path(path).exists():
+            side_label = 'LONG' if side == 'long' else 'SHORT'
+            tp_display = f"{tp_price:.6g}" if tp_price else "trailing"
+            caption = (
+                f"probebot | {symbol} ({timeframe})\n"
+                f"{side_label} @ {entry_price:.6g}  |  SL: {sl_price:.6g}  |  TP: {tp_display}\n"
+                f"{strategy} | {move_type} | Score {score:.1f} | Hit {hit_rate:.0%}"
+            )
+            send_photo(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), path, caption)
+            logger.info("Trade-Chart per Telegram gesendet.")
+    except Exception as e:
+        logger.warning(f"Trade-Chart senden fehlgeschlagen: {e}")
+    finally:
+        if path and Path(path).exists():
+            try:
+                Path(path).unlink()
+            except Exception:
+                pass
+
+
 # ── Execute new trade ─────────────────────────────────────────────────────────
 
 def _execute_trade(exchange, symbol: str, timeframe: str,
@@ -364,6 +417,16 @@ def _execute_trade(exchange, symbol: str, timeframe: str,
     )
     send_message(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), msg)
     logger.info(f"Trade platziert: {strategy} | {tp_params.sl_source} | {tp_params.tp_source}")
+
+    _send_trade_chart(
+        exchange, symbol, timeframe, side, entry_price, sl_price,
+        trail_act if use_trail else tp_price,
+        signal.get('move_type', ''), strategy,
+        signal.get('score', 0), signal.get('hit_rate', 0),
+        signal.get('n_met', 0), signal.get('n_total', 0),
+        tp_params.sl_source, tp_params.tp_source,
+        telegram_cfg, logger,
+    )
     return True
 
 

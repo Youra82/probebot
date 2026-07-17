@@ -518,6 +518,156 @@ def fingerprint_chart(
     return out_path
 
 
+# ─── Chart 6: Live Trade Entry ─────────────────────────────────────────────────
+
+def _extract_ref_level(source: str):
+    """Parst 'swing_low=97.0000' oder '1.5×ATR14=2.3400' aus einem sl_source/
+    tp_source-String (siehe signal_logic.py) -> (name, value) oder None."""
+    import re
+    m = re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\d.]+)\s*$', source or '')
+    if not m:
+        return None
+    try:
+        return m.group(1), float(m.group(2))
+    except ValueError:
+        return None
+
+
+def trade_entry_chart(
+    df: pd.DataFrame,
+    symbol: str,
+    timeframe: str,
+    side: str,
+    entry_price: float,
+    sl_price: float,
+    tp_price: Optional[float],
+    move_type: str,
+    strategy: str,
+    score: float,
+    hit_rate: float,
+    n_met: int,
+    n_total: int,
+    sl_source: str,
+    tp_source: str,
+    out_path: str,
+    n_candles: int = 40,
+) -> str:
+    """
+    Kerzendiagramm fuer einen live eroeffneten Trade -- wird direkt nach
+    Entry+SL/TP-Platzierung per Telegram verschickt (trade_manager.py).
+    Zeigt den Entry-Grund optisch: Signal-Kerze hervorgehoben, Entry/SL/TP-
+    Linien, und -- falls sl_source/tp_source einen Feature-Wert enthalten
+    (z.B. 'swing_low=97.0000') -- eine Referenzlinie fuer genau dieses Level.
+    """
+    setup_dark_style()
+    d = df[['open', 'high', 'low', 'close']].iloc[-n_candles:].reset_index(drop=True)
+    n = len(d)
+    if n == 0:
+        return None
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_facecolor(COLORS['bg'])
+    ax.set_facecolor(COLORS['bg'])
+
+    y_min = float(d['low'].min())
+    y_max = float(d['high'].max())
+    for p in filter(None, [entry_price, sl_price, tp_price]):
+        y_min = min(y_min, float(p) * 0.999)
+        y_max = max(y_max, float(p) * 1.001)
+    margin = (y_max - y_min) * 0.14 if y_max > y_min else y_max * 0.02
+    y_lo, y_hi = y_min - margin, y_max + margin
+    ax.set_xlim(-1, n + 1)
+    ax.set_ylim(y_lo, y_hi)
+
+    def _in_range(price):
+        return price and y_lo < float(price) < y_hi
+
+    # ── Signal-Kerze hervorheben (letzte Kerze = Kerze auf der das Signal
+    # ausgeloest hat) — probebots Entsprechung zu dnabots Genome-Pattern-Band
+    sig_color = MOVE_COLORS.get(move_type, COLORS['yellow'])
+    ax.axvspan(n - 1.5, n - 0.5, color=sig_color, alpha=0.12, zorder=1)
+    ax.text(n - 1, y_lo + (y_hi - y_lo) * 0.01, move_type,
+            color=sig_color, fontsize=7.5, ha='center', va='bottom',
+            fontfamily='monospace', fontweight='bold', alpha=0.9, zorder=7)
+
+    # ── Kerzen ──
+    for i in range(n):
+        o, h, l, c = d['open'].iloc[i], d['high'].iloc[i], d['low'].iloc[i], d['close'].iloc[i]
+        color = COLORS['up'] if c >= o else COLORS['down']
+        ax.plot([i, i], [l, h], color=color, linewidth=0.8, zorder=2)
+        body_h = max(abs(c - o), (h - l) * 0.005 if h > l else h * 0.0005)
+        ax.bar(i, body_h, bottom=min(o, c), color=color, width=0.6, linewidth=0, zorder=3)
+
+    # ── Risiko/Reward-Zonen ──
+    if _in_range(sl_price):
+        ax.axhspan(min(sl_price, entry_price), max(sl_price, entry_price),
+                   color=COLORS['down'], alpha=0.07, zorder=1)
+    if _in_range(tp_price):
+        ax.axhspan(min(tp_price, entry_price), max(tp_price, entry_price),
+                   color=COLORS['up'], alpha=0.07, zorder=1)
+
+    # ── Entry/SL/TP Preis-Tags ──
+    def _price_tag(price, label, color):
+        if not _in_range(price):
+            return
+        ax.axhline(price, color=color, linewidth=1.5, linestyle='--', zorder=6)
+        ax.text(n - 0.3, price, f'  {label}: {price:.6g}  ',
+                color=COLORS['bg'], fontsize=8.5, va='center', ha='right',
+                fontweight='bold', zorder=8,
+                bbox=dict(facecolor=color, edgecolor='none', alpha=0.92,
+                          boxstyle='square,pad=0.25'))
+
+    _price_tag(tp_price, 'TP', COLORS['up'])
+    _price_tag(entry_price, 'Entry', COLORS['yellow'])
+    _price_tag(sl_price, 'SL', COLORS['down'])
+
+    # ── Referenzlinien fuer die tatsaechlichen SL/TP-Quellen (der optische
+    # "Grund" fuer den Trade — z.B. der swing_low den der SL nutzt) ──
+    for source in (sl_source, tp_source):
+        ref = _extract_ref_level(source)
+        if ref and _in_range(ref[1]):
+            name, val = ref
+            ax.axhline(val, color=COLORS['purple'], linewidth=0.8,
+                       linestyle=':', alpha=0.7, zorder=5)
+            ax.text(0.3, val, f'{name}', color=COLORS['purple'], fontsize=7,
+                    va='bottom', ha='left', fontfamily='monospace', alpha=0.85, zorder=8)
+
+    # ── Infobox ──
+    side_label = 'LONG ▲' if side == 'long' else 'SHORT ▼'
+    sl_pct = abs(entry_price - sl_price) / entry_price * 100 if sl_price and entry_price else 0
+    tp_pct = abs(tp_price - entry_price) / entry_price * 100 if tp_price and entry_price else sl_pct * 1.5
+    rr = tp_pct / sl_pct if sl_pct > 0 else 0
+    info_lines = [
+        f"{side_label}   R:R 1:{rr:.1f}",
+        f"Strategie: {strategy}   |   {move_type}",
+        f"Score: {score:.1f}   Hit: {hit_rate:.0%} ({n_met}/{n_total})",
+        "─" * 30,
+        f"SL:  {sl_source}",
+        f"TP:  {tp_source}",
+    ]
+    ax.text(0.01, 0.98, '\n'.join(info_lines),
+            transform=ax.transAxes, fontsize=8, va='top', ha='left',
+            color=COLORS['text'], fontfamily='monospace',
+            bbox=dict(facecolor='#161b22', edgecolor=COLORS['grid'],
+                      alpha=0.9, boxstyle='round,pad=0.5'), zorder=9)
+
+    ax.set_title(
+        f"PROBEBOT  |  {symbol}  {timeframe}  |  {side_label}  |  letzte {n} Kerzen",
+        color=COLORS['accent'], fontsize=11, fontweight='bold', pad=10,
+    )
+    ax.tick_params(colors=COLORS['text_dim'], labelsize=8)
+    for spine in ax.spines.values():
+        spine.set_edgecolor(COLORS['grid'])
+    ax.set_xticks([])
+    ax.yaxis.tick_right()
+    ax.grid(axis='y', color=COLORS['grid'], linewidth=0.4, alpha=0.4, zorder=0)
+
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=130, bbox_inches='tight', facecolor=COLORS['bg'])
+    plt.close(fig)
+    return out_path
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _fmt(val) -> str:
