@@ -375,10 +375,13 @@ def mode_2_portfolio():
 
     print(f"\n  Berechne isolierte OOS-Backtests für {len(chosen)} Configs (Referenz)...")
     all_results = []
-    for cfg in chosen:
+    for i, cfg in enumerate(chosen, 1):
+        name = f"{cfg['market']['symbol'].split('/')[0]} {cfg['market']['timeframe']}"
+        print(f"  [{i}/{len(chosen)}] {name}...{' '*20}", end='\r', flush=True)
         res = _run_oos_backtest(cfg)
         if res:
             all_results.append(res)
+    print(f"  Referenz-Backtests fertig.{' '*30}")
 
     if not all_results:
         return
@@ -441,10 +444,13 @@ def mode_3_auto_portfolio():
 
     print(f"\n  Berechne isolierte OOS-Backtests für alle {len(configs)} Configs (Vorauswahl)...")
     all_results = []
-    for cfg in configs:
+    for i, cfg in enumerate(configs, 1):
+        name = f"{cfg['market']['symbol'].split('/')[0]} {cfg['market']['timeframe']}"
+        print(f"  [{i}/{len(configs)}] {name}...{' '*20}", end='\r', flush=True)
         res = _run_oos_backtest(cfg)
         if res and res['n_trades'] >= 5:
             all_results.append(res)
+    print(f"  Vorauswahl fertig: {len(all_results)}/{len(configs)} Configs verwertbar.{' '*20}")
 
     if not all_results:
         print(f"  {R}Keine verwertbaren Ergebnisse.{NC}")
@@ -459,17 +465,23 @@ def mode_3_auto_portfolio():
     # einmal vorgeladen (_prepare_leg liest Config/bot_spec/Parquet von der
     # Platte) statt bei jedem der bis zu ~N(N+1)/2 Probe-Schritte neu.
     from probebot.analysis.portfolio_simulator import _prepare_leg, _simulate
-    print(f"  Lade Daten für Greedy-Auswahl...")
+    print(f"  Lade Daten für Greedy-Auswahl ({len(all_results)} Configs)...")
     legs_by_result_id = {}
-    for res in all_results:
+    for i, res in enumerate(all_results, 1):
+        name = f"{res['config']['market']['symbol'].split('/')[0]} {res['config']['market']['timeframe']}"
+        print(f"  [{i}/{len(all_results)}] {name}...{' '*20}", end='\r', flush=True)
         leg = _prepare_leg(res['config'])
         if leg is not None:
             legs_by_result_id[id(res)] = leg
+    print(f"  Daten geladen: {len(legs_by_result_id)}/{len(all_results)} Legs.{' '*20}")
 
     print(f"  Greedy-Auswahl (echte Portfolio-Simulation je Kandidat)...")
     portfolio = []
     sim = None
-    for res in all_results:
+    for i, res in enumerate(all_results, 1):
+        name = f"{res['config']['market']['symbol'].split('/')[0]} {res['config']['market']['timeframe']}"
+        print(f"  [{i}/{len(all_results)}] prüfe {name} (Portfolio bisher: {len(portfolio)})...{' '*10}",
+              end='\r', flush=True)
         if res['max_drawdown'] > max_dd:
             continue  # individual DD already too high
         leg = legs_by_result_id.get(id(res))
@@ -480,6 +492,7 @@ def mode_3_auto_portfolio():
         if trial_sim['max_drawdown'] <= max_dd:
             portfolio.append(res)
             sim = trial_sim
+    print(f"  Greedy-Auswahl fertig.{' '*40}")
 
     if not portfolio:
         print(f"\n  {R}Kein Portfolio gefunden das DD ≤ {max_dd}% einhält.{NC}")
@@ -487,14 +500,18 @@ def mode_3_auto_portfolio():
         return
 
     print(f"\n{G}  Portfolio gefunden: {len(portfolio)} Strategien{NC}")
+    final_legs = [legs_by_result_id[id(r)] for r in portfolio]
 
     print(f"\n{Y}Kapital:{NC}")
     portfolio = _prompt_capital_override_results(portfolio)
     # Kapital-Override skaliert nur config['risk']['start_capital'] je Result
-    # (siehe _rescale_result_capital) — Simulation mit der ggf. neu skalierten
-    # Kapitalverteilung neu laufen lassen (billig: nur die finalen N Legs).
-    from probebot.analysis.portfolio_simulator import run_portfolio_simulation
-    sim = run_portfolio_simulation([r['config'] for r in portfolio])
+    # (siehe _rescale_result_capital) — fuer die finale Simulation reichen die
+    # bereits geladenen Legs (final_legs, gleiche Reihenfolge wie portfolio
+    # vor dem Override); nur die config-Referenz auf die ggf. neu skalierte
+    # Version aktualisieren, statt alle Parquet-Dateien erneut zu lesen.
+    for leg, r in zip(final_legs, portfolio):
+        leg.config = r['config']
+    sim = _simulate(final_legs)
 
     _print_portfolio_summary(portfolio, sim)
 
