@@ -3,19 +3,19 @@ test_gpu_parity.py — Korrektheits-Check: gpu_backtester.run_backtest_batch() m
 fuer jede einzelne Parameter-Kombination EXAKT (innerhalb Fliesskomma-Toleranz)
 dasselbe Ergebnis liefern wie backtester.run_backtest() (die Referenz).
 
-Kein pytest -- eigenstaendig ausfuehrbar, gleiche Konvention wie test_smoke.py.
-Exit-Code 0 = alle Tests bestanden, 1 = mindestens eine Abweichung gefunden.
-
-Ausfuehrung:
-    python test_gpu_parity.py
+pytest -- Teil der probebot-Test-Suite (siehe run_tests.sh).
 """
-import sys
 import random
-
-sys.path.insert(0, 'src')
+import sys
 
 import numpy as np
 import pandas as pd
+import pytest
+
+sys.path.insert(0, 'src')
+
+from probebot.analysis.backtester import run_backtest
+from probebot.analysis.gpu_backtester import run_backtest_batch, resolve_device
 
 FIELDS_TO_COMPARE = [
     'n_trades', 'win_rate', 'pnl_pct', 'max_drawdown', 'sharpe',
@@ -107,7 +107,7 @@ def random_params(rng, n):
     return out
 
 
-def dicts_close(a, b, name, idx):
+def _mismatches(a, b, name, idx):
     diffs = []
     for k in FIELDS_TO_COMPARE:
         va, vb = a.get(k, 0), b.get(k, 0)
@@ -119,38 +119,39 @@ def dicts_close(a, b, name, idx):
             diffs.append(f"{k}: ref={va} batch={vb} (diff={abs(va-vb):.6g})")
     if diffs:
         print(f"  MISMATCH [{name} #{idx}]: " + " | ".join(diffs))
-        return False
-    return True
+    return diffs
 
 
-def main():
-    from probebot.analysis.backtester import run_backtest
-    from probebot.analysis.gpu_backtester import run_backtest_batch, resolve_device
-
+@pytest.fixture(scope='module')
+def synthetic_setup():
     df = build_synthetic_data()
     entry_conditions, tradeable = build_entry_conditions()
+    return df, entry_conditions, tradeable
 
-    ok = True
 
-    # ── Test 1: Einzel-Trial-Identitaet (device=cpu) ─────────────────────────
-    print("Test 1: Einzel-Trial (CPU) ...")
+def test_single_trial_cpu_parity(synthetic_setup):
+    print("Test: Einzel-Trial (CPU) ...")
+    df, entry_conditions, tradeable = synthetic_setup
     fixed_params = {
         't_threshold': 3.5, 'min_score': 4.0, 'min_hit_rate': 0.3,
         'sl_pct': 1.5, 'tp_rr': 2.0, 'leverage': 10, 'risk_per_trade_pct': 1.0,
         'max_hold_bars': 24,
     }
     ref = run_backtest(df, entry_conditions, tradeable, fixed_params, start_capital=100.0)
-    device_cpu, reason_cpu = resolve_device('cpu')
+    device_cpu, _ = resolve_device('cpu')
     batch = run_backtest_batch(df, entry_conditions, tradeable, [fixed_params],
                                 start_capital=100.0, device=device_cpu)[0]
     print(f"  ref n_trades={ref['n_trades']} pnl_pct={ref['pnl_pct']}  |  "
           f"batch n_trades={batch['n_trades']} pnl_pct={batch['pnl_pct']}")
-    ok &= dicts_close(ref, batch, "single-cpu", 0)
+    diffs = _mismatches(ref, batch, "single-cpu", 0)
+    assert not diffs, f"CPU-Batch weicht vom Referenz-Backtest ab: {diffs}"
 
-    # ── Test 2: Batch von 200 Zufallsparametern (device=cpu) ────────────────
-    print("\nTest 2: Batch von 200 Zufallsparametern (CPU) ...")
+
+def test_batch_200_cpu_parity(synthetic_setup):
+    print("\nTest: Batch von 200 Zufallsparametern (CPU) ...")
+    df, entry_conditions, tradeable = synthetic_setup
+    device_cpu, _ = resolve_device('cpu')
     rng = np.random.default_rng(7)
-    py_rng = random.Random(7)
     params_list = random_params(rng, 200)
 
     refs = [run_backtest(df, entry_conditions, tradeable, p, start_capital=100.0) for p in params_list]
@@ -161,29 +162,38 @@ def main():
     n_with_trades = sum(1 for r in refs if r['n_trades'] > 0)
     n_liq_total = sum(r.get('n_liquidations', 0) for r in refs)
     for idx, (r, b) in enumerate(zip(refs, batches)):
-        if not dicts_close(r, b, "batch200-cpu", idx):
+        if _mismatches(r, b, "batch200-cpu", idx):
             n_mismatch += 1
     print(f"  {len(params_list)} Trials, {n_with_trades} mit Trades, {n_liq_total} Liquidationen insgesamt")
     print(f"  Mismatches: {n_mismatch}/{len(params_list)}")
-    ok &= (n_mismatch == 0)
+    assert n_mismatch == 0
 
-    # ── Test 3: GPU-Parity (falls CUDA verfuegbar) ───────────────────────────
+
+def test_batch_200_cuda_parity(synthetic_setup):
+    df, entry_conditions, tradeable = synthetic_setup
     device_cuda, reason_cuda = resolve_device('cuda')
-    if device_cuda.type == 'cuda':
-        print(f"\nTest 3: Batch von 200 Zufallsparametern (CUDA: {reason_cuda}) ...")
-        batches_gpu = run_backtest_batch(df, entry_conditions, tradeable, params_list,
-                                          start_capital=100.0, device=device_cuda)
-        n_mismatch_gpu = 0
-        for idx, (r, b) in enumerate(zip(refs, batches_gpu)):
-            if not dicts_close(r, b, "batch200-cuda", idx):
-                n_mismatch_gpu += 1
-        print(f"  Mismatches (CUDA vs. Referenz): {n_mismatch_gpu}/{len(params_list)}")
-        ok &= (n_mismatch_gpu == 0)
-    else:
-        print(f"\nTest 3: uebersprungen ({reason_cuda})")
+    if device_cuda.type != 'cuda':
+        pytest.skip(f"CUDA nicht verfuegbar ({reason_cuda})")
 
-    # ── Test 4: Erzwungene Liquidationen (Randfall gezielt statt zufaellig) ──
-    print("\nTest 4: Erzwungene Liquidation vs. sichere Konfiguration (CPU) ...")
+    print(f"\nTest: Batch von 200 Zufallsparametern (CUDA: {reason_cuda}) ...")
+    device_cpu, _ = resolve_device('cpu')
+    rng = np.random.default_rng(7)
+    params_list = random_params(rng, 200)
+    refs = [run_backtest(df, entry_conditions, tradeable, p, start_capital=100.0) for p in params_list]
+    batches_gpu = run_backtest_batch(df, entry_conditions, tradeable, params_list,
+                                      start_capital=100.0, device=device_cuda)
+    n_mismatch_gpu = 0
+    for idx, (r, b) in enumerate(zip(refs, batches_gpu)):
+        if _mismatches(r, b, "batch200-cuda", idx):
+            n_mismatch_gpu += 1
+    print(f"  Mismatches (CUDA vs. Referenz): {n_mismatch_gpu}/{len(params_list)}")
+    assert n_mismatch_gpu == 0
+
+
+def test_forced_liquidation_parity(synthetic_setup):
+    print("\nTest: Erzwungene Liquidation vs. sichere Konfiguration (CPU) ...")
+    df, entry_conditions, tradeable = synthetic_setup
+    device_cpu, _ = resolve_device('cpu')
     liq_params = []
     for lev in (30, 40, 50, 60):
         for slp in (3.0, 4.0, 5.0):
@@ -198,23 +208,9 @@ def main():
     n_liq4 = sum(r.get('n_liquidations', 0) for r in refs4)
     n_mismatch4 = 0
     for idx, (r, b) in enumerate(zip(refs4, batches4)):
-        if not dicts_close(r, b, "liq-stress-cpu", idx):
+        if _mismatches(r, b, "liq-stress-cpu", idx):
             n_mismatch4 += 1
     print(f"  {len(liq_params)} Trials (hoher Hebel), {n_liq4} Liquidationen insgesamt")
     print(f"  Mismatches: {n_mismatch4}/{len(liq_params)}")
-    ok &= (n_mismatch4 == 0)
-    ok &= (n_liq4 > 0)
-    if n_liq4 == 0:
-        print("  WARNUNG: kein einziger Liquidations-Trade ausgeloest — Testdaten pruefen.")
-
-    print("\n" + "=" * 60)
-    if ok:
-        print("ALLE TESTS BESTANDEN")
-    else:
-        print("FEHLGESCHLAGEN — siehe MISMATCH-Zeilen oben")
-    print("=" * 60)
-    sys.exit(0 if ok else 1)
-
-
-if __name__ == '__main__':
-    main()
+    assert n_mismatch4 == 0
+    assert n_liq4 > 0, "kein einziger Liquidations-Trade ausgeloest — Testdaten pruefen."

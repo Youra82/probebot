@@ -1,7 +1,7 @@
 """
 test_portfolio_simulator.py — synthetische Korrektheits-Checks fuer
-portfolio_simulator.py. Kein pytest -- eigenstaendig ausfuehrbar, gleiche
-Konvention wie test_gpu_parity.py/test_smoke.py.
+portfolio_simulator.py. pytest -- Teil der probebot-Test-Suite (siehe
+run_tests.sh).
 
 Prueft gezielt die Verhaltensweisen die den neuen Simulator vom alten
 (falschen) "isolierte Backtests summieren"-Ansatz unterscheiden:
@@ -10,9 +10,6 @@ Prueft gezielt die Verhaltensweisen die den neuen Simulator vom alten
   3. Unterschiedliche Timeframes in einer Simulation (native Bar-Indizes)
   4. Ausstiegs-Logik-Abgleich gegen backtester.run_backtest() (Einzel-Leg,
      ein einziger Trade -- vor jeder Compounding-Drift identisch)
-
-Ausfuehrung:
-    python test_portfolio_simulator.py
 """
 import sys
 sys.path.insert(0, 'src')
@@ -103,7 +100,7 @@ def test_tie_break():
         ok = False
 
     print(f"  config_order fuellt: {filled_order}  |  score fuellt: {filled_score}  ->  {'OK' if ok else 'FEHLGESCHLAGEN'}")
-    return ok
+    assert ok
 
 
 def test_capital_scarcity():
@@ -144,7 +141,7 @@ def test_capital_scarcity():
 
     print(f"  gefuellt: {filled}  |  skipped_capital={sim['n_signals_skipped_capital']}  "
           f"skipped_slot={sim['n_signals_skipped_slot_limit']}  ->  {'OK' if ok else 'FEHLGESCHLAGEN'}")
-    return ok
+    assert ok
 
 
 def test_cross_timeframe():
@@ -186,7 +183,7 @@ def test_cross_timeframe():
 
     print(f"  Leg B Trades: {len(b_trades)}, bars_held={b_trades[0]['bars_held'] if b_trades else '-'}  "
           f"->  {'OK' if ok else 'FEHLGESCHLAGEN'}")
-    return ok
+    assert ok
 
 
 def test_single_leg_parity():
@@ -213,11 +210,10 @@ def test_single_leg_parity():
     leg = _build_leg(cfg, df, entry_conditions, tradeable, params)
     sim = _simulate([leg], max_open_positions=1, tie_break='config_order')
 
-    ok = True
-    if ref['n_trades'] != 1 or sim['n_trades'] != 1:
-        print(f"  FEHLER: erwartet genau 1 Trade auf beiden Seiten, ref={ref['n_trades']} sim={sim['n_trades']}")
-        return False
+    assert ref['n_trades'] == 1 and sim['n_trades'] == 1, \
+        f"erwartet genau 1 Trade auf beiden Seiten, ref={ref['n_trades']} sim={sim['n_trades']}"
 
+    ok = True
     rt = ref['trades'][0]
     st = sim['trades'][0]
     for field in ('entry_ts', 'close_ts', 'direction', 'move_type', 'close_reason'):
@@ -232,24 +228,4 @@ def test_single_leg_parity():
 
     print(f"  ref: {rt['close_reason']} @ {rt['close_ts']}, pnl={rt['pnl']}  |  "
           f"sim: {st['close_reason']} @ {st['close_ts']}, pnl={st['pnl']}  ->  {'OK' if ok else 'FEHLGESCHLAGEN'}")
-    return ok
-
-
-def main():
-    results = [
-        test_tie_break(),
-        test_capital_scarcity(),
-        test_cross_timeframe(),
-        test_single_leg_parity(),
-    ]
-    print("\n" + "=" * 60)
-    if all(results):
-        print("ALLE TESTS BESTANDEN")
-    else:
-        print(f"FEHLGESCHLAGEN — {sum(1 for r in results if not r)}/{len(results)} Tests")
-    print("=" * 60)
-    sys.exit(0 if all(results) else 1)
-
-
-if __name__ == '__main__':
-    main()
+    assert ok

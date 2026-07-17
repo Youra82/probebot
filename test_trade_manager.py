@@ -6,8 +6,10 @@ Anders als ltbbot/tests/test_workflow.py und test_trailing_stop.py (die
 echte Trigger-Orders auf Bitget platzieren und ein gefuelltes Konto in
 secret.json brauchen), prueft dieser Test dieselbe Kernfrage — werden
 Positionen korrekt eroeffnet/geschlossen, TP/SL korrekt gesetzt — komplett
-gegen eine unittest.mock.MagicMock-Exchange. Kein pytest -- eigenstaendig
-ausfuehrbar, gleiche Konvention wie test_smoke.py/test_gpu_parity.py.
+gegen eine unittest.mock.MagicMock-Exchange. pytest -- Teil der probebot-
+Test-Suite (siehe run_tests.sh); die echte Live-Order-Variante mit
+"gemocktem Signal" gegen die echte Bitget-API liegt in
+tests/test_workflow.py.
 
 Geprueft:
   1. _execute_trade() HYBRID: Positionsgroesse (compute_contracts-Formel),
@@ -17,9 +19,6 @@ Geprueft:
   4. full_trade_cycle() bei offener Position: ensure_tp_sl re-created fehlende
      SL/TP Trigger-Orders
   5. full_trade_cycle() erkennt TP-Close korrekt und setzt Tracker auf idle
-
-Ausfuehrung:
-    python test_trade_manager.py
 """
 import sys
 import tempfile
@@ -73,16 +72,12 @@ def test_execute_trade_hybrid():
         with patch.object(tm, 'TRACKER_DIR', Path(tmpdir)), \
              patch('probebot.utils.telegram.send_message'):
             ok = tm._execute_trade(ex, 'BTC/USDT:USDT', '1h', signal, config, {}, logger)
-
-            if not ok:
-                print("  FEHLER: _execute_trade gab False zurueck.")
-                return False
+            assert ok, "_execute_trade gab False zurueck."
 
             # balance=1000, risk=1% -> risk_usdt=10; sl_dist = 100*1%=1.0 -> contracts=10
             entry_side, entry_amount = ex.place_market_order.call_args[0][1], ex.place_market_order.call_args[0][2]
-            if entry_side != 'buy' or abs(entry_amount - 10.0) > 1e-6:
-                print(f"  FEHLER: Entry-Order side={entry_side} amount={entry_amount} (erwartet buy/10.0)")
-                return False
+            assert entry_side == 'buy' and abs(entry_amount - 10.0) <= 1e-6, \
+                f"Entry-Order side={entry_side} amount={entry_amount} (erwartet buy/10.0)"
 
             # SL bei fallback sl_pct=1% -> 99.0, TP bei tp_rr=2 -> 102.0
             sl_call = ex.place_trigger_market_order.call_args_list[0]
@@ -106,7 +101,7 @@ def test_execute_trade_hybrid():
 
         print(f"  Entry: {entry_side} {entry_amount} @ 100.0  |  SL: {sl_price}  TP: {tp_price}  "
               f"|  Tracker: status={tracker.get('status')}  ->  {'OK' if ok2 else 'FEHLGESCHLAGEN'}")
-        return ok2
+        assert ok2
 
 
 def test_execute_trade_breakout_trailing():
@@ -124,10 +119,7 @@ def test_execute_trade_breakout_trailing():
         with patch.object(tm, 'TRACKER_DIR', Path(tmpdir)), \
              patch('probebot.utils.telegram.send_message'):
             ok = tm._execute_trade(ex, 'ETH/USDT:USDT', '1h', signal, config, {}, logger)
-
-            if not ok:
-                print("  FEHLER: _execute_trade gab False zurueck.")
-                return False
+            assert ok, "_execute_trade gab False zurueck."
 
             trailing_called = ex.place_trailing_stop_order.called
             tp_fixed_called = ex.place_trigger_market_order.call_count > 1
@@ -146,7 +138,7 @@ def test_execute_trade_breakout_trailing():
 
         print(f"  trailing_called={trailing_called}  tracker.use_trailing={tracker.get('use_trailing')}  "
               f"->  {'OK' if ok2 else 'FEHLGESCHLAGEN'}")
-        return ok2
+        assert ok2
 
 
 def test_sl_failure_triggers_emergency_close():
@@ -177,7 +169,7 @@ def test_sl_failure_triggers_emergency_close():
 
         print(f"  return={ok}  close_position_called={ex.close_position.called}  "
               f"tracker.status={tracker.get('status')}  ->  {'OK' if ok2 else 'FEHLGESCHLAGEN'}")
-        return ok2
+        assert ok2
 
 
 def test_ensure_tp_sl_recreates_missing_orders():
@@ -217,7 +209,7 @@ def test_ensure_tp_sl_recreates_missing_orders():
 
         print(f"  SL neu angelegt: {ex.place_trigger_market_order.called}  "
               f"neue sl_order_id={tracker.get('sl_order_id')}  ->  {'OK' if ok2 else 'FEHLGESCHLAGEN'}")
-        return ok2
+        assert ok2
 
 
 def test_full_trade_cycle_detects_tp_close():
@@ -261,25 +253,4 @@ def test_full_trade_cycle_detects_tp_close():
 
         print(f"  tracker.status={tracker.get('status')}  telegram_msg_enthaelt_TP="
               f"{bool(sent_messages and 'TP' in sent_messages[0])}  ->  {'OK' if ok2 else 'FEHLGESCHLAGEN'}")
-        return ok2
-
-
-def main():
-    results = [
-        test_execute_trade_hybrid(),
-        test_execute_trade_breakout_trailing(),
-        test_sl_failure_triggers_emergency_close(),
-        test_ensure_tp_sl_recreates_missing_orders(),
-        test_full_trade_cycle_detects_tp_close(),
-    ]
-    print("\n" + "=" * 60)
-    if all(results):
-        print("ALLE TESTS BESTANDEN")
-    else:
-        print(f"FEHLGESCHLAGEN — {sum(1 for r in results if not r)}/{len(results)} Tests")
-    print("=" * 60)
-    sys.exit(0 if all(results) else 1)
-
-
-if __name__ == '__main__':
-    main()
+        assert ok2
