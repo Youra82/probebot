@@ -65,7 +65,7 @@ from probebot.forensics.database import ForensicsDB
 from probebot.forensics.correlator import Correlator
 db3 = ForensicsDB()
 corr = Correlator(db3, lookback=5)
-corr_result = corr.analyze(result, movements[:10], 'TEST', '1d')
+corr_result, corr_meta = corr.analyze(result, movements[:10], 'TEST', '1d')
 print(f'  Move types analyzed: {list(corr_result.keys())}')
 for mtype, ranked in corr_result.items():
     top = [r for r in ranked if abs(r["t_statistic"]) >= 2.0][:3]

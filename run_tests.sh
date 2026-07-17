@@ -32,6 +32,22 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
+echo "Test 3: GPU-Backtester Parity (gpu_backtester vs. backtester)..."
+python3 test_gpu_parity.py
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Test 3 FEHLGESCHLAGEN.${NC}"
+    deactivate; exit 1
+fi
+
+echo ""
+echo "Test 4: Portfolio-Simulator (Tie-Break, Kapital, Cross-Timeframe, Exit-Logik)..."
+python3 test_portfolio_simulator.py
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Test 4 FEHLGESCHLAGEN.${NC}"
+    deactivate; exit 1
+fi
+
+echo ""
 echo -e "${GREEN}==============================${NC}"
 echo -e "${GREEN}  Alle Tests bestanden!${NC}"
 echo -e "${GREEN}==============================${NC}"
