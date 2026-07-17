@@ -12,8 +12,9 @@ schliessen.
 
 Ueberspringt sich selbst automatisch (pytest.skip) wenn keine secret.json
 mit einem 'probebot'-Account vorhanden ist -- unkritisch fuer CI/andere
-Maschinen ohne Live-Zugang. Sehr kleines Risiko (0.1% vom Kontostand,
-5x Hebel) -- siehe Kommentare unten.
+Maschinen ohne Live-Zugang. Sehr kleines, FIXES Test-Risiko (siehe
+TEST_BALANCE unten -- dnabot-Pattern: Positionsgroesse haengt bewusst
+NICHT vom echten, ggf. wachsenden Kontostand ab).
 """
 import pytest
 import os
@@ -21,6 +22,7 @@ import sys
 import json
 import logging
 import time
+from unittest.mock import patch
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
@@ -110,9 +112,14 @@ def test_full_probebot_workflow_on_bitget(test_setup):
     if bal < 5.0:
         pytest.skip(f'Zu wenig Guthaben ({bal:.2f} USDT < 5 USDT) fuer Live-Test.')
 
-    # SEHR KLEINES Risiko fuer den Test! 0.1% vom echten Kontostand, 5x Hebel.
-    # sl_pct=0.8% -> Notional = risk_usdt / (sl_pct/100) = bal*0.1%/0.8% = bal * 12.5%
-    # (z.B. 108 USDT Guthaben -> ~13.5 USDT Notional, ~2.7 USDT Margin bei 5x)
+    # FIXER Test-Kontostand (dnabot-Pattern) -- die Positionsgroesse haengt so
+    # bewusst NICHT vom echten (ggf. wachsenden) Kontostand ab, sondern bleibt
+    # bei jedem Testlauf gleich klein. _execute_trade() holt sich das Guthaben
+    # normalerweise selbst via exchange.fetch_balance_usdt() -- fuer den Test
+    # wird genau diese eine Methode auf einen kleinen Fixwert gepatcht.
+    TEST_BALANCE = 50.0
+    # sl_pct=0.8% -> Notional = risk_usdt / (sl_pct/100) = TEST_BALANCE*0.1%/0.8%
+    # = 50 * 0.1% / 0.8% = 6.25 USDT Notional, ~1.25 USDT Margin bei 5x
     config = {'risk': {'sl_pct': 0.8, 'tp_rr': 2.0, 'leverage': 5, 'risk_per_trade_pct': 0.1}}
 
     print(f'-> Setze Margin-Modus: isolated | Leverage: 5x')
@@ -134,7 +141,8 @@ def test_full_probebot_workflow_on_bitget(test_setup):
         'score': 42.0, 'n_met': 3, 'n_total': 4, 'hit_rate': 0.75,
     }
 
-    ok = tm._execute_trade(exchange, SYMBOL, TIMEFRAME, mock_signal, config, telegram_config, test_logger)
+    with patch.object(exchange, 'fetch_balance_usdt', return_value=TEST_BALANCE):
+        ok = tm._execute_trade(exchange, SYMBOL, TIMEFRAME, mock_signal, config, telegram_config, test_logger)
     assert ok, 'FEHLER: _execute_trade() gab False zurueck.'
 
     print('-> Warte 5s auf Order-Ausfuehrung...')
