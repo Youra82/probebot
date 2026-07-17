@@ -48,6 +48,14 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
+echo "Test 5: Trade-Manager (gemockte Exchange: Entry/SL/TP, Notfall-Close, Close-Erkennung)..."
+python3 test_trade_manager.py
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Test 5 FEHLGESCHLAGEN.${NC}"
+    deactivate; exit 1
+fi
+
+echo ""
 echo -e "${GREEN}==============================${NC}"
 echo -e "${GREEN}  Alle Tests bestanden!${NC}"
 echo -e "${GREEN}==============================${NC}"
