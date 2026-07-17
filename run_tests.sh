@@ -15,8 +15,8 @@ source .venv/bin/activate
 
 export PYTHONPATH="$(pwd)/src"
 
-echo "Fuehre Pytest aus..."
-if python3 -m pytest -v -s; then
+echo "Fuehre Pytest aus (Live-Workflow-Test)..."
+if python3 -m pytest tests/ -v -s; then
     echo -e "${GREEN}Pytest erfolgreich durchgelaufen. Alle Tests bestanden.${NC}"
     EXIT_CODE=0
 else
