@@ -2,6 +2,7 @@
 # run_tests.sh — probebot Smoke Tests
 
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
@@ -53,6 +54,20 @@ python3 test_trade_manager.py
 if [ $? -ne 0 ]; then
     echo -e "${RED}Test 5 FEHLGESCHLAGEN.${NC}"
     deactivate; exit 1
+fi
+
+echo ""
+echo "Test 6: Live-Workflow (echte Bitget-Order, ueberspringt sich selbst ohne secret.json)..."
+if python3 -m pytest tests/ -v -s; then
+    echo -e "${GREEN}Test 6 erfolgreich (bestanden oder uebersprungen).${NC}"
+else
+    PYTEST_EXIT_CODE=$?
+    if [ $PYTEST_EXIT_CODE -eq 5 ]; then
+        echo -e "${YELLOW}Test 6: keine Tests gefunden — uebersprungen.${NC}"
+    else
+        echo -e "${RED}Test 6 FEHLGESCHLAGEN.${NC}"
+        deactivate; exit 1
+    fi
 fi
 
 echo ""
