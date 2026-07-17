@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 sys.path.insert(0, 'src')
 
+_failed = False
+
 # Synthetic data
 np.random.seed(42)
 n = 300
@@ -38,7 +40,7 @@ db = ForensicsDB()
 miner = PatternMiner(db, lookback=5)
 miner.mine_movements(df_feat, movements[:20], 'TEST', '1d', clear_existing=True)
 correlator = Correlator(db, lookback=5)
-correlations = correlator.analyze(df_feat, movements[:20], 'TEST', '1d')
+correlations, correlations_meta = correlator.analyze(df_feat, movements[:20], 'TEST', '1d')
 clusters = correlator.cluster_movements(df_feat, movements[:20], n_clusters=3) if len(movements) >= 6 else {}
 db.close()
 
@@ -51,19 +53,27 @@ from probebot.report.charts import (
 p1 = save_chart(overview_chart, df=df_feat, movements=movements, symbol='BTC/USDT', timeframe='1d',
                 prefix='test_overview')
 print(f'  Overview: {"OK" if p1 else "FAILED"} — {p1}')
+if not p1:
+    _failed = True
 
 p2 = save_chart(correlation_chart, correlations=correlations, symbol='BTC/USDT', timeframe='1d',
                 prefix='test_correlation')
 print(f'  Correlation: {"OK" if p2 else "FAILED"} — {p2}')
+if not p2:
+    _failed = True
 
 p3 = save_chart(fingerprint_chart, correlations=correlations, symbol='BTC/USDT', timeframe='1d',
                 prefix='test_fingerprint')
 print(f'  Fingerprint: {"OK" if p3 else "FAILED"} — {p3}')
+if not p3:
+    _failed = True
 
 if clusters:
     p4 = save_chart(cluster_chart, clusters=clusters, symbol='BTC/USDT', timeframe='1d',
                     prefix='test_cluster')
     print(f'  Cluster: {"OK" if p4 else "FAILED"} — {p4}')
+    if not p4:
+        _failed = True
 
 print('[5] Telegram module test...')
 from probebot.utils.telegram import load_telegram_config
@@ -74,4 +84,7 @@ else:
     print('  Telegram: no config found (expected — no secret.json here)')
 
 print()
+if _failed:
+    print('=== CHART TESTS FAILED ===')
+    sys.exit(1)
 print('=== CHART TESTS PASSED ===')

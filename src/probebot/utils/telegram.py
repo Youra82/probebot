@@ -27,12 +27,19 @@ def load_telegram_config(secret_path: str = None) -> dict:
     try:
         with open(secret_path) as f:
             secrets = json.load(f)
+
+        def _account(key: str) -> dict:
+            acc = secrets.get(key, {})
+            if isinstance(acc, list):
+                acc = acc[0] if acc else {}
+            return acc if isinstance(acc, dict) else {}
+
         # Try probebot-specific config first, then fall back to any bot's telegram config
         tg = (
-            secrets.get('probebot', {}).get('telegram') or
+            _account('probebot').get('telegram') or
             secrets.get('telegram') or
-            secrets.get('ltbbot', {}).get('telegram') or
-            secrets.get('mbot', {}).get('telegram') or
+            _account('ltbbot').get('telegram') or
+            _account('mbot').get('telegram') or
             {}
         )
         return tg
