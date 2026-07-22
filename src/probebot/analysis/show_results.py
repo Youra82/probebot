@@ -359,14 +359,44 @@ def _send_telegram_document(path: Path, caption: str):
         print(f"  {Y}Telegram-Versand übersprungen: {e}{NC}")
 
 
+def _config_key(cfg: Dict) -> str:
+    return f"{cfg['market']['symbol']}_{cfg['market']['timeframe']}"
+
+
+def _isolated_capital_sum_series(plotted: List[Dict]):
+    """Chronologische Zeitreihe der SUMME aller isolierten Kapitalien --
+    rein informativ ('was waere wenn ich alle Configs mit getrennten Wallets
+    parallel gefahren haette'), KEINE echte Portfolio-Simulation (keine
+    Slot-/Kapital-Konkurrenz, kein gemeinsamer Topf -- siehe
+    portfolio_simulator.py fuer die echte Simulation aus Modus 2/3).
+    Gibt (start_total, [(close_ts, total), ...]) zurueck."""
+    capital = {}
+    events = []  # (close_ts, config_key, capital_after)
+    for res in plotted:
+        key = _config_key(res['config'])
+        capital[key] = res['config'].get('risk', {}).get('start_capital', 100.0)
+        for t in res['trades']:
+            events.append((t['close_ts'], key, t['capital_after']))
+    events.sort(key=lambda e: e[0])
+
+    start_total = sum(capital.values())
+    series = []
+    for close_ts, key, capital_after in events:
+        capital[key] = capital_after
+        series.append((close_ts, sum(capital.values())))
+    return start_total, series
+
+
 def _generate_isolated_equity_chart(results: List[Dict]):
     """Ueberlagerter Equity-Chart aller isolierten OOS-Backtests (Modus 1) —
-    jede Config mit eigenem, NIE konkurrierendem Kapital. Anders als
-    _generate_portfolio_equity_chart() (Modus 2/3) gibt es hier KEINE
-    kombinierte 'Portfolio Equity'-Linie, weil das kein echtes Portfolio ist
-    (siehe portfolio_simulator.py fuer die echte Simulation)."""
+    jede Config mit eigenem, NIE konkurrierendem Kapital. Zusaetzlich eine
+    'Summe (isoliert)'-Linie auf zweiter Y-Achse -- klar getrennt von
+    _generate_portfolio_equity_chart()s 'Portfolio Equity' (Modus 2/3), die
+    eine ECHTE Kapital-/Slot-Konkurrenz simuliert; hier ist es nur die reine
+    Summe der unabhaengigen Kapitalien, keine echte Portfolio-Simulation."""
     try:
         import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
     except ImportError:
         print(f"  {R}plotly nicht installiert — Chart übersprungen.{NC}")
         return
@@ -381,7 +411,7 @@ def _generate_isolated_equity_chart(results: List[Dict]):
               '#10b981', '#f472b6', '#a3e635', '#fb923c', '#e879f9', '#38bdf8',
               '#facc15', '#fb7185', '#4ade80', '#c084fc', '#fbbf24', '#2dd4bf',
               '#f87171', '#818cf8']
-    fig = go.Figure()
+    fig = make_subplots(specs=[[{'secondary_y': True}]])
 
     for idx, res in enumerate(plotted):
         cfg = res['config']
@@ -394,17 +424,29 @@ def _generate_isolated_equity_chart(results: List[Dict]):
         fig.add_trace(go.Scatter(
             x=times, y=vals, mode='lines', name=f"{sym}/{tf}",
             line=dict(color=COLORS[idx % len(COLORS)], width=1.3), opacity=0.85,
-        ))
+        ), secondary_y=False)
+
+    start_total, sum_series = _isolated_capital_sum_series(plotted)
+    if sum_series:
+        first_entry = min(res['trades'][0]['entry_ts'] for res in plotted if res['trades'])
+        sum_times = [first_entry] + [s[0] for s in sum_series]
+        sum_vals  = [start_total] + [s[1] for s in sum_series]
+        fig.add_trace(go.Scatter(
+            x=sum_times, y=sum_vals, mode='lines',
+            name='Summe (isoliert, KEINE echte Portfolio-Simulation)',
+            line=dict(color='#2563eb', width=2.2, dash='dot'), opacity=0.9,
+        ), secondary_y=True)
 
     title = (f"probebot OOS-Backtest — {len(plotted)} Configs "
-             f"(isoliert, eigenes Kapital je Config — NICHT summiert)")
+             f"(isoliert, eigenes Kapital je Config)")
     fig.update_layout(
         title=dict(text=title, font=dict(size=13), x=0.5, xanchor='center'),
         height=700, hovermode='x unified', template='plotly_dark', dragmode='zoom',
         xaxis=dict(rangeslider=dict(visible=True), fixedrange=False),
-        yaxis=dict(title='Equity (USDT, je Config isoliert)', fixedrange=False),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
     )
+    fig.update_yaxes(title_text='Equity je Config (USDT, isoliert)', secondary_y=False, fixedrange=False)
+    fig.update_yaxes(title_text='Summe aller Configs (USDT, isoliert)', secondary_y=True, fixedrange=False)
 
     charts_dir = ROOT / 'artifacts' / 'charts'
     charts_dir.mkdir(parents=True, exist_ok=True)
@@ -429,26 +471,38 @@ def _generate_isolated_trades_excel(results: List[Dict]):
 
     reason_map = {'TP': 'TP erreicht', 'SL': 'SL erreicht', 'LIQ': 'Liquidiert',
                   'TIMEOUT': 'Timeout', 'END': 'Periodenende'}
-    rows = []
-    n = 0
-    for res in results:
+
+    # Global chronologisch (nach Close-Zeit ueber ALLE Configs sortiert), damit
+    # die laufende Summen-Spalte tatsaechlich Schritt fuer Schritt Sinn ergibt.
+    plotted = [r for r in results if r.get('trades')]
+    all_events = []
+    capital = {}
+    for res in plotted:
         cfg = res['config']
+        key = _config_key(cfg)
+        capital[key] = cfg.get('risk', {}).get('start_capital', 100.0)
         sym = cfg['market']['symbol'].split('/')[0]
         tf  = cfg['market']['timeframe']
-        for t in sorted(res.get('trades', []), key=lambda t: t['entry_ts']):
-            n += 1
-            rows.append({
-                'Nr':                        n,
-                'Datum':                     t['entry_ts'][:16].replace('T', ' '),
-                'Coin':                      sym,
-                'Timeframe':                 tf,
-                'Hebel':                     f"{t.get('leverage', 0):.0f}x",
-                'Richtung':                  t['direction'],
-                'Bewegungstyp':              t.get('move_type', ''),
-                'Ergebnis':                  reason_map.get(t.get('close_reason', ''), t.get('close_reason', '')),
-                'PnL (USDT)':                t['pnl'],
-                'Kapital danach (isoliert)': t['capital_after'],
-            })
+        for t in res['trades']:
+            all_events.append((t['close_ts'], key, sym, tf, t))
+    all_events.sort(key=lambda e: e[0])
+
+    rows = []
+    for i, (close_ts, key, sym, tf, t) in enumerate(all_events, 1):
+        capital[key] = t['capital_after']
+        rows.append({
+            'Nr':                              i,
+            'Datum':                           t['entry_ts'][:16].replace('T', ' '),
+            'Coin':                            sym,
+            'Timeframe':                       tf,
+            'Hebel':                           f"{t.get('leverage', 0):.0f}x",
+            'Richtung':                        t['direction'],
+            'Bewegungstyp':                    t.get('move_type', ''),
+            'Ergebnis':                        reason_map.get(t.get('close_reason', ''), t.get('close_reason', '')),
+            'PnL (USDT)':                      t['pnl'],
+            'Gesamtkapital (Summe, isoliert)': round(sum(capital.values()), 4),
+        })
+    n = len(rows)
 
     if not rows:
         print(f"  {Y}Keine Trades — Excel übersprungen.{NC}")
@@ -470,7 +524,7 @@ def _generate_isolated_trades_excel(results: List[Dict]):
     headers = list(rows[0].keys())
     col_widths = {'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12, 'Hebel': 8, 'Richtung': 10,
                   'Bewegungstyp': 20, 'Ergebnis': 14, 'PnL (USDT)': 14,
-                  'Kapital danach (isoliert)': 20}
+                  'Gesamtkapital (Summe, isoliert)': 24}
 
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=h)
@@ -495,11 +549,23 @@ def _generate_isolated_trades_excel(results: List[Dict]):
             cell.fill = fill
             cell.border = thin_border
             cell.alignment = Alignment(horizontal='center', vertical='center')
-            if key in ('PnL (USDT)', 'Kapital danach (isoliert)'):
+            if key in ('PnL (USDT)', 'Gesamtkapital (Summe, isoliert)'):
                 cell.number_format = '#,##0.0000'
         ws.row_dimensions[r_idx].height = 18
 
+    start_total = sum(r['config'].get('risk', {}).get('start_capital', 100.0) for r in plotted)
+    final_total = rows[-1]['Gesamtkapital (Summe, isoliert)'] if rows else start_total
+
     summary_row = len(rows) + 3
+    ws.cell(row=summary_row, column=1, value='Zusammenfassung — Summe aller Configs (isoliert, KEINE echte Portfolio-Simulation)').font = Font(bold=True, size=11)
+    summary_row += 1
+    ws.cell(row=summary_row, column=1, value='Start-Kapital (Summe)').font = Font(bold=True)
+    ws.cell(row=summary_row, column=2, value=f"{start_total:.2f} USDT")
+    summary_row += 1
+    ws.cell(row=summary_row, column=1, value='End-Kapital (Summe)').font = Font(bold=True)
+    ws.cell(row=summary_row, column=2, value=f"{final_total:.2f} USDT")
+    summary_row += 2
+
     ws.cell(row=summary_row, column=1, value='Zusammenfassung (je Config isoliert)').font = Font(bold=True, size=11)
     summary_row += 1
     for res in results:
