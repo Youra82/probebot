@@ -320,6 +320,12 @@ def mode_1_oos_table():
                 _print_trade_detail(res['config'], res.get('trades', []))
                 break
 
+    inp2 = input(f"\n  Chart (HTML) + Excel erstellen und per Telegram senden? (j/n) [Standard: n]: ").strip().lower()
+    if inp2 in ('j', 'y', 'ja', 'yes'):
+        all_results = [res for _, _, res in results]
+        _generate_isolated_equity_chart(all_results)
+        _generate_isolated_trades_excel(all_results)
+
 
 def _print_trade_detail(config: Dict, trades: List[Dict]):
     print(f"\n  {C}Trades Detail:{NC}")
@@ -333,6 +339,191 @@ def _print_trade_detail(config: Dict, trades: List[Dict]):
               f"{pnl_c}{t['pnl']:>+7.2f}{NC}  "
               f"{t['close_reason']:<8}  "
               f"{t['bars_held']:>5}")
+
+
+def _send_telegram_document(path: Path, caption: str):
+    try:
+        from probebot.utils.telegram import load_telegram_config, send_document
+        secret_path = ROOT.parent / 'secret.json'
+        if not secret_path.exists():
+            secret_path = ROOT / 'secret.json'
+        tg = load_telegram_config(str(secret_path))
+        if tg.get('bot_token'):
+            if send_document(tg['bot_token'], tg['chat_id'], str(path), caption=caption):
+                print(f"  {G}Via Telegram gesendet.{NC}")
+            else:
+                print(f"  {R}Telegram-Versand fehlgeschlagen.{NC}")
+        else:
+            print(f"  {Y}Telegram nicht konfiguriert.{NC}")
+    except Exception as e:
+        print(f"  {Y}Telegram-Versand übersprungen: {e}{NC}")
+
+
+def _generate_isolated_equity_chart(results: List[Dict]):
+    """Ueberlagerter Equity-Chart aller isolierten OOS-Backtests (Modus 1) —
+    jede Config mit eigenem, NIE konkurrierendem Kapital. Anders als
+    _generate_portfolio_equity_chart() (Modus 2/3) gibt es hier KEINE
+    kombinierte 'Portfolio Equity'-Linie, weil das kein echtes Portfolio ist
+    (siehe portfolio_simulator.py fuer die echte Simulation)."""
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        print(f"  {R}plotly nicht installiert — Chart übersprungen.{NC}")
+        return
+
+    plotted = [r for r in results if r.get('trades')]
+    if not plotted:
+        print(f"  {Y}Keine Trades — Chart übersprungen.{NC}")
+        return
+
+    COLORS = ['#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#84cc16',
+              '#06b6d4', '#a78bfa', '#eab308', '#22c55e', '#ef4444', '#3b82f6',
+              '#10b981', '#f472b6', '#a3e635', '#fb923c', '#e879f9', '#38bdf8',
+              '#facc15', '#fb7185', '#4ade80', '#c084fc', '#fbbf24', '#2dd4bf',
+              '#f87171', '#818cf8']
+    fig = go.Figure()
+
+    for idx, res in enumerate(plotted):
+        cfg = res['config']
+        sym = cfg['market']['symbol'].split('/')[0]
+        tf  = cfg['market']['timeframe']
+        start_cap = cfg.get('risk', {}).get('start_capital', 100.0)
+        trades = sorted(res['trades'], key=lambda t: t['entry_ts'])
+        times = [trades[0]['entry_ts']] + [t['close_ts'] for t in trades]
+        vals  = [start_cap] + [t['capital_after'] for t in trades]
+        fig.add_trace(go.Scatter(
+            x=times, y=vals, mode='lines', name=f"{sym}/{tf}",
+            line=dict(color=COLORS[idx % len(COLORS)], width=1.3), opacity=0.85,
+        ))
+
+    title = (f"probebot OOS-Backtest — {len(plotted)} Configs "
+             f"(isoliert, eigenes Kapital je Config — NICHT summiert)")
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=13), x=0.5, xanchor='center'),
+        height=700, hovermode='x unified', template='plotly_dark', dragmode='zoom',
+        xaxis=dict(rangeslider=dict(visible=True), fixedrange=False),
+        yaxis=dict(title='Equity (USDT, je Config isoliert)', fixedrange=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+    )
+
+    charts_dir = ROOT / 'artifacts' / 'charts'
+    charts_dir.mkdir(parents=True, exist_ok=True)
+    out = charts_dir / 'probebot_oos_equity.html'
+    fig.write_html(str(out))
+    print(f"  {G}Equity-Chart erstellt: {out}{NC}")
+
+    _send_telegram_document(out, f"probebot OOS-Backtest — {len(plotted)} Configs (isoliert)")
+
+
+def _generate_isolated_trades_excel(results: List[Dict]):
+    """Excel-Tabelle aller Trades aus den isolierten OOS-Backtests (Modus 1),
+    je Config mit eigenem Kapital (siehe _generate_trades_excel fuer die
+    echte Portfolio-Variante aus Modus 2/3)."""
+    try:
+        import openpyxl
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        print(f"  {Y}openpyxl nicht installiert — Excel übersprungen. (pip install openpyxl){NC}")
+        return
+
+    reason_map = {'TP': 'TP erreicht', 'SL': 'SL erreicht', 'LIQ': 'Liquidiert',
+                  'TIMEOUT': 'Timeout', 'END': 'Periodenende'}
+    rows = []
+    n = 0
+    for res in results:
+        cfg = res['config']
+        sym = cfg['market']['symbol'].split('/')[0]
+        tf  = cfg['market']['timeframe']
+        for t in sorted(res.get('trades', []), key=lambda t: t['entry_ts']):
+            n += 1
+            rows.append({
+                'Nr':                        n,
+                'Datum':                     t['entry_ts'][:16].replace('T', ' '),
+                'Coin':                      sym,
+                'Timeframe':                 tf,
+                'Hebel':                     f"{t.get('leverage', 0):.0f}x",
+                'Richtung':                  t['direction'],
+                'Bewegungstyp':              t.get('move_type', ''),
+                'Ergebnis':                  reason_map.get(t.get('close_reason', ''), t.get('close_reason', '')),
+                'PnL (USDT)':                t['pnl'],
+                'Kapital danach (isoliert)': t['capital_after'],
+            })
+
+    if not rows:
+        print(f"  {Y}Keine Trades — Excel übersprungen.{NC}")
+        return
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Trades'
+
+    header_fill  = PatternFill('solid', fgColor='1E3A5F')
+    win_fill     = PatternFill('solid', fgColor='D6F4DC')
+    loss_fill    = PatternFill('solid', fgColor='FAD7D7')
+    liq_fill     = PatternFill('solid', fgColor='F3D6FA')
+    timeout_fill = PatternFill('solid', fgColor='FFF3CC')
+    alt_fill     = PatternFill('solid', fgColor='F2F2F2')
+    thin_border  = Border(left=Side(style='thin', color='CCCCCC'), right=Side(style='thin', color='CCCCCC'),
+                           top=Side(style='thin', color='CCCCCC'), bottom=Side(style='thin', color='CCCCCC'))
+
+    headers = list(rows[0].keys())
+    col_widths = {'Nr': 6, 'Datum': 18, 'Coin': 10, 'Timeframe': 12, 'Hebel': 8, 'Richtung': 10,
+                  'Bewegungstyp': 20, 'Ergebnis': 14, 'PnL (USDT)': 14,
+                  'Kapital danach (isoliert)': 20}
+
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.fill = header_fill
+        cell.font = Font(bold=True, color='FFFFFF', size=11)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = thin_border
+        ws.column_dimensions[get_column_letter(col)].width = col_widths.get(h, 14)
+    ws.row_dimensions[1].height = 22
+
+    for r_idx, row in enumerate(rows, 2):
+        if row['Ergebnis'] == 'TP erreicht':
+            fill = win_fill
+        elif row['Ergebnis'] == 'SL erreicht':
+            fill = loss_fill
+        elif row['Ergebnis'] == 'Liquidiert':
+            fill = liq_fill
+        else:
+            fill = timeout_fill if r_idx % 2 == 0 else alt_fill
+        for col, key in enumerate(headers, 1):
+            cell = ws.cell(row=r_idx, column=col, value=row[key])
+            cell.fill = fill
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            if key in ('PnL (USDT)', 'Kapital danach (isoliert)'):
+                cell.number_format = '#,##0.0000'
+        ws.row_dimensions[r_idx].height = 18
+
+    summary_row = len(rows) + 3
+    ws.cell(row=summary_row, column=1, value='Zusammenfassung (je Config isoliert)').font = Font(bold=True, size=11)
+    summary_row += 1
+    for res in results:
+        if not res.get('trades'):
+            continue
+        cfg = res['config']
+        sym = cfg['market']['symbol'].split('/')[0]
+        tf  = cfg['market']['timeframe']
+        ws.cell(row=summary_row, column=1, value=f"{sym} {tf}").font = Font(bold=True)
+        ws.cell(row=summary_row, column=2, value=(
+            f"{res['n_trades']} Trades | WR {res['win_rate']:.1f}% | "
+            f"PnL {res['pnl_pct']:+.1f}% | MaxDD {res['max_drawdown']:.1f}% | "
+            f"Sharpe {res['sharpe']:.2f}"
+        ))
+        summary_row += 1
+
+    charts_dir = ROOT / 'artifacts' / 'charts'
+    charts_dir.mkdir(parents=True, exist_ok=True)
+    out = charts_dir / 'probebot_oos_trades.xlsx'
+    wb.save(str(out))
+    print(f"  {G}Excel-Tabelle erstellt: {out}{NC}")
+
+    n_configs = sum(1 for r in results if r.get('trades'))
+    _send_telegram_document(out, f"probebot OOS-Backtest Trades | {n_configs} Configs | {n} Trades gesamt (isoliert)")
 
 
 # ─── Mode 2: Portfolio-Simulation ────────────────────────────────────────────
@@ -632,23 +823,9 @@ def _generate_portfolio_equity_chart(portfolio: List[Dict], sim: Dict):
     fig.write_html(str(out))
     print(f"  {G}Portfolio-Chart erstellt: {out}{NC}")
 
-    try:
-        from probebot.utils.telegram import load_telegram_config, send_document
-        secret_path = ROOT.parent / 'secret.json'
-        if not secret_path.exists():
-            secret_path = ROOT / 'secret.json'
-        tg = load_telegram_config(str(secret_path))
-        if tg.get('bot_token'):
-            caption = (f"probebot Portfolio-Equity\n{len(portfolio)} Coins | "
-                       f"PnL: {sign}{pnl_pct:.1f}% | Equity: {final_equity:.2f} USDT")
-            if send_document(tg['bot_token'], tg['chat_id'], str(out), caption=caption):
-                print(f"  {G}Via Telegram gesendet.{NC}")
-            else:
-                print(f"  {R}Telegram-Versand fehlgeschlagen.{NC}")
-        else:
-            print(f"  {Y}Telegram nicht konfiguriert.{NC}")
-    except Exception as e:
-        print(f"  {Y}Telegram-Versand übersprungen: {e}{NC}")
+    caption = (f"probebot Portfolio-Equity\n{len(portfolio)} Coins | "
+               f"PnL: {sign}{pnl_pct:.1f}% | Equity: {final_equity:.2f} USDT")
+    _send_telegram_document(out, caption)
 
 
 def _generate_trades_excel(portfolio: List[Dict], sim: Dict):
@@ -753,24 +930,10 @@ def _generate_trades_excel(portfolio: List[Dict], sim: Dict):
     wb.save(str(out))
     print(f"  {G}Excel-Tabelle erstellt: {out}{NC}")
 
-    try:
-        from probebot.utils.telegram import load_telegram_config, send_document
-        secret_path = ROOT.parent / 'secret.json'
-        if not secret_path.exists():
-            secret_path = ROOT / 'secret.json'
-        tg = load_telegram_config(str(secret_path))
-        if tg.get('bot_token'):
-            caption = (f"probebot Trades-Tabelle | {len(portfolio)} Coins | "
-                       f"{sim['n_trades']} Trades | WR: {sim['win_rate']:.1f}% | "
-                       f"Final: {sim['end_capital']:.2f} USDT")
-            if send_document(tg['bot_token'], tg['chat_id'], str(out), caption=caption):
-                print(f"  {G}Via Telegram gesendet.{NC}")
-            else:
-                print(f"  {R}Telegram-Versand fehlgeschlagen.{NC}")
-        else:
-            print(f"  {Y}Telegram nicht konfiguriert.{NC}")
-    except Exception as e:
-        print(f"  {Y}Telegram-Versand übersprungen: {e}{NC}")
+    caption = (f"probebot Trades-Tabelle | {len(portfolio)} Coins | "
+               f"{sim['n_trades']} Trades | WR: {sim['win_rate']:.1f}% | "
+               f"Final: {sim['end_capital']:.2f} USDT")
+    _send_telegram_document(out, caption)
 
 
 def _write_portfolio_to_settings(results: List[Dict]):
