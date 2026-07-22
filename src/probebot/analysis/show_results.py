@@ -363,19 +363,25 @@ def _config_key(cfg: Dict) -> str:
     return f"{cfg['market']['symbol']}_{cfg['market']['timeframe']}"
 
 
-def _isolated_capital_sum_series(plotted: List[Dict]):
+def _isolated_capital_sum_series(all_results: List[Dict]):
     """Chronologische Zeitreihe der SUMME aller isolierten Kapitalien --
     rein informativ ('was waere wenn ich alle Configs mit getrennten Wallets
     parallel gefahren haette'), KEINE echte Portfolio-Simulation (keine
     Slot-/Kapital-Konkurrenz, kein gemeinsamer Topf -- siehe
     portfolio_simulator.py fuer die echte Simulation aus Modus 2/3).
+
+    WICHTIG: all_results muss ALLE Configs enthalten (auch die mit 0 Trades)
+    -- sonst fehlt deren Anteil am eingegebenen Gesamt-Startkapital in der
+    Summe (Configs ohne Trade behalten ihr Startkapital einfach unveraendert,
+    tragen aber trotzdem zur Summe bei).
+
     Gibt (start_total, [(close_ts, total), ...]) zurueck."""
     capital = {}
     events = []  # (close_ts, config_key, capital_after)
-    for res in plotted:
+    for res in all_results:
         key = _config_key(res['config'])
         capital[key] = res['config'].get('risk', {}).get('start_capital', 100.0)
-        for t in res['trades']:
+        for t in res.get('trades', []):
             events.append((t['close_ts'], key, t['capital_after']))
     events.sort(key=lambda e: e[0])
 
@@ -426,7 +432,7 @@ def _generate_isolated_equity_chart(results: List[Dict]):
             line=dict(color=COLORS[idx % len(COLORS)], width=1.3), opacity=0.85,
         ), secondary_y=False)
 
-    start_total, sum_series = _isolated_capital_sum_series(plotted)
+    start_total, sum_series = _isolated_capital_sum_series(results)
     if sum_series:
         first_entry = min(res['trades'][0]['entry_ts'] for res in plotted if res['trades'])
         sum_times = [first_entry] + [s[0] for s in sum_series]
@@ -474,13 +480,16 @@ def _generate_isolated_trades_excel(results: List[Dict]):
 
     # Global chronologisch (nach Close-Zeit ueber ALLE Configs sortiert), damit
     # die laufende Summen-Spalte tatsaechlich Schritt fuer Schritt Sinn ergibt.
+    # capital-Basis kommt aus ALLEN Configs (auch 0-Trades) -- sonst fehlt
+    # deren Anteil am eingegebenen Gesamt-Startkapital in der Summe.
     plotted = [r for r in results if r.get('trades')]
     all_events = []
     capital = {}
+    for res in results:
+        capital[_config_key(res['config'])] = res['config'].get('risk', {}).get('start_capital', 100.0)
     for res in plotted:
         cfg = res['config']
         key = _config_key(cfg)
-        capital[key] = cfg.get('risk', {}).get('start_capital', 100.0)
         sym = cfg['market']['symbol'].split('/')[0]
         tf  = cfg['market']['timeframe']
         for t in res['trades']:
@@ -553,7 +562,7 @@ def _generate_isolated_trades_excel(results: List[Dict]):
                 cell.number_format = '#,##0.0000'
         ws.row_dimensions[r_idx].height = 18
 
-    start_total = sum(r['config'].get('risk', {}).get('start_capital', 100.0) for r in plotted)
+    start_total = sum(r['config'].get('risk', {}).get('start_capital', 100.0) for r in results)
     final_total = rows[-1]['Gesamtkapital (Summe, isoliert)'] if rows else start_total
 
     summary_row = len(rows) + 3
