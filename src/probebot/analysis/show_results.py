@@ -583,11 +583,14 @@ def _generate_isolated_trades_excel(results: List[Dict]):
         cfg = res['config']
         sym = cfg['market']['symbol'].split('/')[0]
         tf  = cfg['market']['timeframe']
+        abs_pnl = sum(t['pnl'] for t in res['trades'])
+        pnl_of_total = abs_pnl / start_total * 100 if start_total else 0.0
         ws.cell(row=summary_row, column=1, value=f"{sym} {tf}").font = Font(bold=True)
         ws.cell(row=summary_row, column=2, value=(
             f"{res['n_trades']} Trades | WR {res['win_rate']:.1f}% | "
-            f"PnL {res['pnl_pct']:+.1f}% | MaxDD {res['max_drawdown']:.1f}% | "
-            f"Sharpe {res['sharpe']:.2f}"
+            f"PnL (eigenes Kapital) {res['pnl_pct']:+.1f}% | "
+            f"PnL (vom Gesamtkapital) {pnl_of_total:+.2f}% | "
+            f"MaxDD {res['max_drawdown']:.1f}% | Sharpe {res['sharpe']:.2f}"
         ))
         summary_row += 1
 
