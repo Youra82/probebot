@@ -466,7 +466,11 @@ def run_backtest_batch(df, entry_conditions: Dict, tradeable_move_types: List[Di
 
     mean_pnl = sum_pnl / n_trades_f.clamp_min(1)
     var_pnl = (sum_pnl_sq / n_trades_f.clamp_min(1) - mean_pnl * mean_pnl).clamp_min(0)
-    std_pnl = torch.where(n_trades > 1, torch.sqrt(var_pnl), torch.full_like(zeros, 1e-9))
+    # Mit <=1 Trade ist Varianz nicht schaetzbar -- std_pnl bleibt 0.0 (nicht
+    # 1e-9), damit die naechste Zeile korrekt auf Sharpe=0.0 zurueckfaellt statt
+    # mean_pnl durch eine winzige Epsilon-Standardabweichung zu teilen (siehe
+    # backtester.py, identischer Fix fuer Parity).
+    std_pnl = torch.where(n_trades > 1, torch.sqrt(var_pnl), zeros)
     sharpe = torch.where(std_pnl > 0, mean_pnl / std_pnl * torch.sqrt(n_trades_f), zeros)
 
     n_losses = n_trades - n_wins

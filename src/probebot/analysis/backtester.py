@@ -342,8 +342,15 @@ def run_backtest(
 
     pnls     = [t['pnl'] for t in trades]
     mean_pnl = float(np.mean(pnls))
-    std_pnl  = float(np.std(pnls)) if len(pnls) > 1 else 1e-9
-    sharpe   = mean_pnl / std_pnl * (n_trades ** 0.5) if std_pnl > 0 else 0.0
+    # Mit <=1 Trade ist Varianz nicht schaetzbar -- Sharpe bleibt 0.0, nicht
+    # ueber eine winzige Epsilon-Standardabweichung ins Absurde explodieren
+    # lassen (frueher: std_pnl=1e-9 fuer n=1 -> Sharpe im zweistelligen
+    # Millionenbereich moeglich).
+    if len(pnls) > 1:
+        std_pnl = float(np.std(pnls))
+        sharpe  = mean_pnl / std_pnl * (n_trades ** 0.5) if std_pnl > 0 else 0.0
+    else:
+        sharpe = 0.0
 
     total_win  = sum(t['pnl'] for t in wins)
     total_loss = abs(sum(t['pnl'] for t in losses))

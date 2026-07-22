@@ -214,3 +214,48 @@ def test_forced_liquidation_parity(synthetic_setup):
     print(f"  Mismatches: {n_mismatch4}/{len(liq_params)}")
     assert n_mismatch4 == 0
     assert n_liq4 > 0, "kein einziger Liquidations-Trade ausgeloest — Testdaten pruefen."
+
+
+def test_single_trade_sharpe_not_absurd():
+    """
+    Regressionstest fuer einen echten Bug (gefunden ueber show_results.sh im
+    Live-Betrieb): mit genau 1 Trade wurde std_pnl frueher auf 1e-9 statt 0.0
+    gesetzt, wodurch mean_pnl/std_pnl auf zweistellige Millionenwerte
+    explodierte statt korrekt auf Sharpe=0.0 zurueckzufallen (Varianz ist mit
+    nur 1 Beobachtung nicht schaetzbar). 200 zufaellige Trials in den anderen
+    Tests trafen nie zufaellig genau n_trades==1 -- deshalb hier gezielt
+    konstruiert, fuer CPU (run_backtest) UND run_backtest_batch (Parity).
+    """
+    print("\nTest: Sharpe bei genau 1 Trade darf nicht explodieren ...")
+    n = 30
+    ts = pd.date_range('2023-01-01', periods=n, freq='1h', tz='UTC')
+    close = np.full(n, 100.0)
+    high = close * 1.001
+    low = close * 0.999
+    open_ = close.copy()
+    feat_a = np.zeros(n)
+    feat_a[12] = 1.0
+    df = pd.DataFrame({
+        'timestamp': ts, 'open': open_, 'high': high, 'low': low, 'close': close,
+        'volume': np.full(n, 1e6), 'feat_a': feat_a,
+    })
+    df.loc[13, 'high'] = 110.0  # erzwingt TP-Treffer auf dem einzigen Trade
+
+    entry_conditions = {'UP': {'must_have': [], 'should_have': [
+        {'feature': 'feat_a', 'direction': 'above', 'baseline_avg': 0.0, 't_statistic': 5.0}]}}
+    tradeable = [{'move_type': 'UP', 'direction': 'LONG'}]
+    params = {
+        't_threshold': 1.0, 'min_score': 1.0, 'min_hit_rate': 0.1,
+        'sl_pct': 1.0, 'tp_rr': 2.0, 'leverage': 10, 'risk_per_trade_pct': 1.0,
+        'max_hold_bars': 24, 'fee_pct_per_side': 0.06,
+    }
+
+    ref = run_backtest(df, entry_conditions, tradeable, params, start_capital=15.0)
+    device_cpu, _ = resolve_device('cpu')
+    batch = run_backtest_batch(df, entry_conditions, tradeable, [params],
+                                start_capital=15.0, device=device_cpu)[0]
+
+    print(f"  n_trades={ref['n_trades']}  ref_sharpe={ref['sharpe']}  batch_sharpe={batch['sharpe']}")
+    assert ref['n_trades'] == 1, "Testaufbau soll genau 1 Trade erzeugen"
+    assert ref['sharpe'] == 0.0, f"CPU: erwartet Sharpe=0.0 bei 1 Trade, bekam {ref['sharpe']}"
+    assert batch['sharpe'] == 0.0, f"Batch: erwartet Sharpe=0.0 bei 1 Trade, bekam {batch['sharpe']}"
