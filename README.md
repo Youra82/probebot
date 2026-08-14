@@ -305,7 +305,8 @@ Symbol/Timeframe-Kombinationen neu durch Phase 1 + Phase 2 laufen lassen.
 `run_pipeline.sh` bzw. `rescan_all.sh --reset`, falls man ihn separat/vorab ausführen will):
 
 ```bash
-rm -f artifacts/db/forensics.db          # Bewegungen + Kontext (mit altem Feature-Code berechnet)
+rm -f artifacts/db/forensics.db artifacts/db/forensics.db-wal artifacts/db/forensics.db-shm
+                                          # Bewegungen + Kontext (mit altem Feature-Code berechnet)
 rm -f artifacts/db/optuna_probebot.db    # Optuna-Trial-Historie aller Symbole/Timeframes
 rm -f artifacts/db/bot_spec_*.json       # Entry-Bedingungen je Symbol/Timeframe (Forensik-Output)
 rm -f artifacts/db/report_*.html         # HTML-Forensik-Reports

@@ -56,7 +56,7 @@ done
 
 if [ "$RESET" -eq 1 ]; then
     echo "=== Kompletter Reset ==="
-    rm -f artifacts/db/forensics.db
+    rm -f artifacts/db/forensics.db artifacts/db/forensics.db-wal artifacts/db/forensics.db-shm
     rm -f artifacts/db/optuna_probebot.db
     rm -f artifacts/db/bot_spec_*.json
     rm -f artifacts/db/report_*.html

@@ -15,14 +15,13 @@ _ARTIFACTS_ROOT = (
 )
 DB_PATH = _ARTIFACTS_ROOT / "artifacts" / "db" / "forensics.db"
 
-# Setting up WAL mode (PRAGMA + first writes) has been observed to fail
-# transiently with "disk I/O error" on WSL2 (real-time AV scanning the
-# VHDX-backed disk while SQLite creates the -wal/-shm sidecar files is a
-# known trigger) even though the same call succeeds moments later on a
-# retry -- not a real corruption, just a momentary I/O hiccup. Retry the
-# whole connect+setup a few times before giving up for real.
-_SETUP_RETRIES = 5
-_SETUP_RETRY_BASE_DELAY = 0.5  # seconds, doubles each attempt
+# DB setup has been observed to fail with "disk I/O error" on WSL2 (real-
+# time AV scanning the VHDX-backed disk is a known trigger) -- sometimes a
+# few-hundred-ms blip, sometimes persisting past a 15s retry window. Retry
+# the whole connect+setup a few times regardless, since a slow recovery is
+# still better than a dead pipeline run.
+_SETUP_RETRIES = 6
+_SETUP_RETRY_BASE_DELAY = 0.5  # seconds, doubles each attempt (caps ~16s total)
 
 
 class ForensicsDB:
@@ -47,7 +46,11 @@ class ForensicsDB:
 
     def _setup(self):
         c = self.conn
-        c.execute("PRAGMA journal_mode=WAL")
+        # No WAL mode: this DB only ever has one writer at a time (sequential
+        # per-symbol pipeline runs, no concurrent readers to speed up), so
+        # WAL's benefit doesn't apply here -- but its -wal/-shm sidecar files
+        # are exactly what triggered the disk I/O errors above. Default
+        # rollback-journal mode needs no extra files and has been reliable.
         c.execute("PRAGMA synchronous=NORMAL")
         c.executescript("""
             CREATE TABLE IF NOT EXISTS movements (
