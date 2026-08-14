@@ -294,6 +294,65 @@ bevor der Optimizer erneut läuft).
 > OOS-Ergebnis gesteuert. Das lässt sich nicht rein technisch verhindern — Faustregel: OOS-Ergebnis
 > erst anschauen, wenn man mit den Parametern wirklich fertig ist.
 
+### Nach einem Feature-Fix: sauberer Reset + Re-Run
+
+Wenn sich die Berechnung eines Features ändert (z.B. der `NON_CAUSAL_FEATURES`-Fix oben), reicht
+`--force` auf einzelne Configs **nicht** — `forensics.db` enthält noch Bewegungen/Kontext, die mit
+dem alten Feature-Code berechnet wurden. Sauberster Weg: kompletter Reset, dann alle
+Symbol/Timeframe-Kombinationen neu durch Phase 1 + Phase 2 laufen lassen.
+
+```bash
+cd probebot   # auf der Trainingsmaschine, NICHT auf dem Live-VPS
+bash run_pipeline.sh
+```
+
+Ablauf (Enter übernimmt jeweils den Standardwert):
+
+1. **„Alles zurücksetzen? (j/n)"** → `j` — löscht `forensics.db`, `optuna_probebot.db`, alle
+   `bot_spec_*.json`/`config_*.json`, Reports/Charts/Parquet-Cache. `artifacts/tracker/` (offene
+   Live-Positionen) bleibt unberührt. **Nur beim allerersten Lauf der Batches unten `j` sagen** —
+   bei den folgenden Batches würde ein zweiter Reset die vorherigen Ergebnisse wieder löschen.
+2. **„Was möchtest du tun? (1/2)"** → `1` (Forensik + Optimizer zusammen)
+3. **„Symbol(e)"** → die Symbole des jeweiligen Batches (siehe unten), Leerzeichen-getrennt
+4. **„Timeframe(s)"** → der Timeframe des Batches
+5. **Start-/End-Datum** → Enter (automatisch je Timeframe / heute)
+6. **„Bewegungstypen filtern"** → Enter (alle)
+7. **„MTF Drill-Down aktivieren?"** → `n` (nur Zusatz-Charts, für den Re-Run irrelevant, spart Zeit)
+8. **„Bestehende DB-Einträge löschen?"** → wird nur gefragt, wenn Schritt 1 `n` war; dann `n`
+   (die Kombinationen sind ja neu, nichts zu löschen)
+9. **„Ergebnisse per Telegram senden?"** → nach Geschmack, bei vielen Kombinationen eher `n`
+10. Optimizer-Prompts (Trials/Kapital/Modus/MaxDD/Engine/Device/Batch-Größe) → Enter für alle
+    (übernimmt `settings.json`-Defaults: 100 Trials, 100 USDT, `best_profit`, 30% MaxDD, vectorized)
+
+Um nicht 19 Symbole × 4 Timeframes (viele davon gar nicht aktiv) unnötig durchzurechnen, in
+Batches gruppiert nach Timeframe — deckt genau die aktuell in `settings.json` aktiven Strategien ab
+(Liste ggf. anpassen, falls sich `active_strategies` seither geändert hat):
+
+```text
+Batch 1 (30m, mit Reset):  ADA ATOM AVAX BCH DOGE DOT ETH FIL ICP LINK LTC NEAR SOL XLM
+Batch 2 (1h, ohne Reset):  ADA ATOM BCH DOT ETC LINK LTC XLM XRP
+Batch 3 (2h, ohne Reset):  BNB BTC
+Batch 4 (4h, ohne Reset):  TRX
+```
+
+Nach allen vier Batches:
+
+```bash
+bash push_configs.sh   # neue config_*.json + bot_spec_*.json ins Repo pushen
+```
+
+Dann auf dem Live-Rechner (VPS/MINIPC):
+
+```bash
+bash update.sh          # zieht die neuen Configs/Bot-Specs
+```
+
+**Danach `settings.json → live_trading_settings.active_strategies` gegen die tatsächlich neu
+erzeugten `config_*.json` abgleichen** — durch den Fix validieren manche bisherigen Symbole
+eventuell keinen Edge mehr (Optimizer bricht dann sauber mit `tradeable=[]` ab, keine neue Config),
+andere könnten neu dazukommen. `master_runner.py` überspringt Strategien ohne Config zwar mit einer
+Fehlermeldung im Log statt abzustürzen, aber unnötig — die Liste sollte den echten Stand widerspiegeln.
+
 ### Ausgabe: `config_SYM_TF.json`
 
 ```json
@@ -614,7 +673,7 @@ Dies ist die wichtigste Invariante des gesamten Systems:
 | `range_position_20 / 50` | Position in N-Bar Range |
 | `ema_alignment` | EMA-Stack Ausrichtung (bullish/bearish) |
 | `fvg_bull / fvg_bear` | Fair Value Gap |
-| `bull_ob / bear_ob` | Order Blocks |
+| `bull_ob / bear_ob` ⚠️ | Order Blocks — **nicht als Entry-Condition nutzbar, siehe Hinweis unten** |
 | `realized_vol_20` | Realisierte Volatilität |
 | `entropy_squeeze` | Entropie-Squeeze (kombiniert BB + KC) |
 
@@ -622,9 +681,9 @@ Dies ist die wichtigste Invariante des gesamten Systems:
 
 | Feature | Beschreibung |
 |---------|-------------|
-| `cvd` | Cumulative Volume Delta (Kauf vs. Verkauf) |
+| `cvd` ⚠️ | Cumulative Volume Delta (Kauf vs. Verkauf) — **nicht als Entry-Condition nutzbar, siehe Hinweis unten** |
 | `cvd_slope` | CVD Steigung (Momentum des Orderflusses) |
-| `obv / obv_z / obv_slope` | On Balance Volume |
+| `obv` ⚠️ / `obv_z` / `obv_slope` | On Balance Volume — **`obv` roh nicht als Entry-Condition nutzbar, `obv_z`/`obv_slope` unbedenklich** |
 | `vwap_20` | Volume-Weighted Average Price |
 | `vol_poc_20` | Volume Point of Control (Preis mit meistem Volumen) |
 | `volume_z / volume_ratio` | Volumen Z-Score / Verhältnis zum Durchschnitt |
@@ -633,6 +692,26 @@ Dies ist die wichtigste Invariante des gesamten Systems:
 | `cum_pressure_slope` | Steigung des kumulativen Drucks |
 | `mfi_divergence` | MFI Divergenz (Preis vs. Geldfluss) |
 | `vol_confirm` | Volumen-Bestätigung der Richtung |
+
+> ⚠️ **`bull_ob`/`bear_ob`, `cvd`, `obv` sind seit 2026-08-14 von `feature_vector()`/
+> `feature_vectors_bulk()` ausgeschlossen** (`features/engine.py::NON_CAUSAL_FEATURES`) und können
+> vom Optimizer nicht mehr als `entry_conditions`-Kandidaten gewählt werden:
+> - **`bull_ob`/`bear_ob`** (`structure.py::_order_blocks()`) markieren Kerze `j` erst dann als
+>   Order Block, wenn eine **spätere** Kerze `i` (bis zu 5 Bars danach) den Impuls bestätigt — auf
+>   der zuletzt geschlossenen Live-Kerze ist die Flag deshalb strukturell immer `False`, weil es
+>   noch keine "5 Kerzen später" gibt. Der Backtester berechnet Features einmal über den kompletten
+>   historischen DataFrame und "sieht" die Bestätigung — Lookahead-Bias. War mit t-Statistiken bis
+>   61 eines der am häufigsten gewählten `must_have`-Features und der Hauptgrund, warum Live-Signal-
+>   Checks über Wochen nichts fanden, während derselbe Bot-Spec im Backtest stark profitabel wirkte.
+> - **`cvd`/`obv`** sind unbegrenzte laufende Summen ab Start des übergebenen DataFrames. Live wird
+>   nur mit den letzten ~250 Kerzen gerechnet (`utils/exchange.py::fetch_recent_ohlcv`), der Backtest
+>   über Jahre — kalibrierte `baseline_avg`-Schwellen liegen dadurch oft im Milliarden-Bereich und
+>   sind live nie erreichbar. Die abgeleiteten, verschiebungsinvarianten Geschwister (`cvd_slope`,
+>   `obv_z`, `obv_slope`, `cvd_divergence`) sind davon nicht betroffen und bleiben nutzbar.
+>
+> Bereits deployte `bot_spec_*.json`-Dateien (gitignored) enthalten ggf. noch alte, davon betroffene
+> `entry_conditions` — der Code-Fix wirkt nur auf **neue** Forensik-/Optimizer-Läufe. Siehe
+> [Nach einem Feature-Fix: sauberer Reset + Re-Run](#nach-einem-feature-fix-sauberer-reset--re-run).
 
 ---
 
