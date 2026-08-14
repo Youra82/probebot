@@ -301,6 +301,22 @@ Wenn sich die Berechnung eines Features ändert (z.B. der `NON_CAUSAL_FEATURES`-
 dem alten Feature-Code berechnet wurden. Sauberster Weg: kompletter Reset, dann alle
 Symbol/Timeframe-Kombinationen neu durch Phase 1 + Phase 2 laufen lassen.
 
+**Manueller Reset auf der Kommandozeile** (entspricht der „Alles zurücksetzen?"-Frage in
+`run_pipeline.sh` bzw. `rescan_all.sh --reset`, falls man ihn separat/vorab ausführen will):
+
+```bash
+rm -f artifacts/db/forensics.db          # Bewegungen + Kontext (mit altem Feature-Code berechnet)
+rm -f artifacts/db/optuna_probebot.db    # Optuna-Trial-Historie aller Symbole/Timeframes
+rm -f artifacts/db/bot_spec_*.json       # Entry-Bedingungen je Symbol/Timeframe (Forensik-Output)
+rm -f artifacts/db/report_*.html         # HTML-Forensik-Reports
+rm -f artifacts/data/*.parquet           # Roh-OHLCV-Cache je Symbol/Timeframe
+rm -f artifacts/charts/*.png artifacts/charts/*.html artifacts/charts/*.xlsx  # Chart-/Excel-Output
+rm -f docs/*.png                         # In README eingebettete Beispiel-Charts
+rm -f src/probebot/strategy/configs/config_*.json  # Optimizer-Output (Signal-Schwellen, Risiko-Params)
+```
+
+`artifacts/tracker/` (offene Live-Positionen) wird davon bewusst **nicht** berührt.
+
 **Für viele Kombinationen (mehr als eine Handvoll): `rescan_all.sh` statt `run_pipeline.sh`.**
 `run_pipeline.sh` ist interaktiv (`read -p`-Prompts) — bei zig Kombinationen über mehrere
 Batches hinweg Antworten pastet man sich leicht in der Reihenfolge/Anzahl der Zeilen, was den
