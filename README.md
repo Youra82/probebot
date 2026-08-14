@@ -324,18 +324,28 @@ Ablauf (Enter übernimmt jeweils den Standardwert):
 10. Optimizer-Prompts (Trials/Kapital/Modus/MaxDD/Engine/Device/Batch-Größe) → Enter für alle
     (übernimmt `settings.json`-Defaults: 100 Trials, 100 USDT, `best_profit`, 30% MaxDD, vectorized)
 
-Um nicht 19 Symbole × 4 Timeframes (viele davon gar nicht aktiv) unnötig durchzurechnen, in
-Batches gruppiert nach Timeframe — deckt genau die aktuell in `settings.json` aktiven Strategien ab
-(Liste ggf. anpassen, falls sich `active_strategies` seither geändert hat):
+**Nicht nur die bisher aktiven Symbol/Timeframe-Kombinationen neu laufen lassen** — welcher
+Timeframe pro Symbol am besten validiert, war teilweise vom jetzt entfernten `bull_ob`/`bear_ob`-
+Lookahead-Signal getrieben, die alte "beste" Wahl kann sich also verschieben. Stattdessen jedes
+beobachtete Symbol über alle bisher üblichen Timeframes neu scannen — ein Batch pro Timeframe,
+gleiche Symbolliste in jedem Batch:
 
 ```text
-Batch 1 (30m, mit Reset):  ADA ATOM AVAX BCH DOGE DOT ETH FIL ICP LINK LTC NEAR SOL XLM
-Batch 2 (1h, ohne Reset):  ADA ATOM BCH DOT ETC LINK LTC XLM XRP
-Batch 3 (2h, ohne Reset):  BNB BTC
-Batch 4 (4h, ohne Reset):  TRX
+Beobachtete Symbole (20): ADA ATOM AVAX BCH BNB BTC DOGE DOT ETC ETH FIL ICP LINK LTC NEAR SOL TRX UNI XLM XRP
+
+Batch 1 (30m, mit Reset):  <20 Symbole>
+Batch 2 (1h,  ohne Reset): <20 Symbole>
+Batch 3 (2h,  ohne Reset): <20 Symbole>
+Batch 4 (4h,  ohne Reset): <20 Symbole>
+Batch 5 (6h,  ohne Reset): <20 Symbole>
+Batch 6 (1d,  ohne Reset): <20 Symbole>
 ```
 
-Nach allen vier Batches:
+120 Kombinationen — je nach Hardware ein Lauf über mehrere Stunden bis Tage, am besten über Nacht
+oder mehrere Sessions verteilt laufen lassen (Reset nur bei Batch 1, danach läuft jeder weitere
+Batch auf den Ergebnissen der vorherigen auf).
+
+Nach allen sechs Batches:
 
 ```bash
 bash push_configs.sh   # neue config_*.json + bot_spec_*.json ins Repo pushen
