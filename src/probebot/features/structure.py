@@ -32,8 +32,9 @@ def add_all_structure(df: pd.DataFrame, scale: float = 1.0) -> pd.DataFrame:
     df['fvg_bear'] = fvg['bear'].astype(float)  # bearish FVG
     df['in_fvg'] = (fvg['bull'] | fvg['bear']).astype(float)
 
-    # Order blocks (last opposing candle before impulse)
-    ob = _order_blocks(df, lookback=sp(5, scale))
+    # Order blocks (retest of a previously confirmed zone -- causal, see
+    # _order_blocks() docstring)
+    ob = _order_blocks(df, lookback=sp(5, scale), max_zone_age=sp(100, scale))
     df['bull_ob'] = ob['bull'].astype(float)
     df['bear_ob'] = ob['bear'].astype(float)
 
@@ -204,31 +205,70 @@ def _fair_value_gaps(df: pd.DataFrame) -> dict:
 
 # ─── Order Blocks ─────────────────────────────────────────────────────────────
 
-def _order_blocks(df: pd.DataFrame, impulse_threshold: float = 0.015, lookback: int = 5) -> dict:
+def _order_blocks(df: pd.DataFrame, impulse_threshold: float = 0.015,
+                  lookback: int = 5, max_zone_age: int = 100) -> dict:
     """
-    Detect order blocks: last opposing candle before a strong impulse move.
-    Bull OB: last bearish candle before strong bullish impulse.
-    Bear OB: last bullish candle before strong bearish impulse.
+    Order-block RETEST detection — causally valid, unlike a naive "is this
+    candle currently an order block" flag (which needs `lookback` FUTURE
+    candles to confirm and is therefore always False on the most recently
+    closed live candle; see NON_CAUSAL_FEATURES in features/engine.py for
+    the full writeup of why that version was removed).
+
+    A bull/bear order block (last opposing candle before a strong impulse)
+    only becomes a KNOWN zone once the impulse candle `i` itself closes —
+    that confirmation step uses only candles <= i, so it's causal. What
+    was NOT causal was retroactively flagging the origin candle `j` (which
+    lies before `i`) as "being" the order block; a real trader can't act on
+    candle `j` until `i` has already happened.
+
+    So instead: track confirmed zones going forward, and flag bull_ob/
+    bear_ob True on a LATER candle `t` (t > confirmation index) whose
+    high/low range overlaps a still-active zone -- i.e. "price is right
+    now retesting a previously confirmed order block", which is the actual
+    real-time-tradeable form of this concept (entries are taken on the
+    retest/pullback, not on the impulse candle itself). Zones older than
+    `max_zone_age` bars are dropped as stale.
     """
     n = len(df)
     bull_ob = np.zeros(n, dtype=bool)
     bear_ob = np.zeros(n, dtype=bool)
     close = df['close'].values
     open_ = df['open'].values
+    high  = df['high'].values
+    low   = df['low'].values
+
+    active_bull = []  # list of (confirmed_at_idx, zone_low, zone_high)
+    active_bear = []
 
     for i in range(3, n):
+        active_bull = [z for z in active_bull if i - z[0] <= max_zone_age]
+        active_bear = [z for z in active_bear if i - z[0] <= max_zone_age]
+
+        # Retest check at candle i, using only zones confirmed on a
+        # strictly earlier candle -- causal.
+        hi_i, lo_i = high[i], low[i]
+        for _, z_lo, z_hi in active_bull:
+            if lo_i <= z_hi and hi_i >= z_lo:
+                bull_ob[i] = True
+                break
+        for _, z_lo, z_hi in active_bear:
+            if lo_i <= z_hi and hi_i >= z_lo:
+                bear_ob[i] = True
+                break
+
+        # New zone confirmation using candle i's own close -- also causal,
+        # only becomes part of `active_*` (and thus checkable) from the
+        # NEXT candle onward.
         move = (close[i] - close[i - 1]) / (close[i - 1] + 1e-10)
         if move > impulse_threshold:
-            # Bullish impulse - last bearish candle is bull OB
             for j in range(i - 1, max(i - lookback, 0), -1):
-                if close[j] < open_[j]:  # bearish candle
-                    bull_ob[j] = True
+                if close[j] < open_[j]:  # bearish candle -> bull OB zone
+                    active_bull.append((i, low[j], high[j]))
                     break
         elif move < -impulse_threshold:
-            # Bearish impulse - last bullish candle is bear OB
             for j in range(i - 1, max(i - lookback, 0), -1):
-                if close[j] > open_[j]:  # bullish candle
-                    bear_ob[j] = True
+                if close[j] > open_[j]:  # bullish candle -> bear OB zone
+                    active_bear.append((i, low[j], high[j]))
                     break
 
     return {

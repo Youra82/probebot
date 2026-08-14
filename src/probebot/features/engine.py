@@ -21,17 +21,15 @@ from .scaling import timeframe_scale, sp
 #   move_type using them as a condition is permanently dead in live trading
 #   regardless of real market state. (Their derived, translation-invariant
 #   siblings cvd_slope/cvd_divergence/obv_slope/obv_z stay eligible.)
-# - 'bull_ob', 'bear_ob': structure.py::_order_blocks() flags candle j as an
-#   order block only once a LATER candle i (up to `lookback` bars ahead)
-#   confirms the impulse — i.e. it looks into the future relative to j. On
-#   the most-recently-closed live candle there is no future candle yet, so
-#   this flag is structurally always False/0.0 live, no matter what — while
-#   a backtest computing features once over the whole historical df "sees"
-#   the confirmation. This was one of the most common must_have features in
-#   deployed bot_specs (huge t-statistics, since it's a near-tautological
-#   lookahead), and explains live signal checks finding nothing for weeks
-#   while the same config backtests as strongly profitable over that period.
-NON_CAUSAL_FEATURES = {'cvd', 'obv', 'bull_ob', 'bear_ob'}
+# 'bull_ob'/'bear_ob' USED to be here too: the original structure.py::_order_
+# _blocks() flagged candle j as an order block only once a LATER candle i
+# (up to `lookback` bars ahead) confirmed the impulse -- always False/0.0 on
+# the most-recently-closed live candle, no matter what, while a backtest
+# computing features once over the whole historical df "saw" the
+# confirmation. Fixed 2026-08-14 by redefining bull_ob/bear_ob as a causal
+# order-block-RETEST flag (zone confirmed on an earlier candle, checked for
+# overlap on the current one) -- see structure.py::_order_blocks() docstring.
+NON_CAUSAL_FEATURES = {'cvd', 'obv'}
 
 
 def compute_all_features(df: pd.DataFrame, min_candles: int = 200, verbose: bool = True,

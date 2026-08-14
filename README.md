@@ -718,7 +718,7 @@ Dies ist die wichtigste Invariante des gesamten Systems:
 | `range_position_20 / 50` | Position in N-Bar Range |
 | `ema_alignment` | EMA-Stack Ausrichtung (bullish/bearish) |
 | `fvg_bull / fvg_bear` | Fair Value Gap |
-| `bull_ob / bear_ob` ⚠️ | Order Blocks — **nicht als Entry-Condition nutzbar, siehe Hinweis unten** |
+| `bull_ob / bear_ob` | Order-Block-**Retest** (Preis testet eine zuvor bestätigte Zone erneut — kausal, siehe Hinweis unten) |
 | `realized_vol_20` | Realisierte Volatilität |
 | `entropy_squeeze` | Entropie-Squeeze (kombiniert BB + KC) |
 
@@ -738,16 +738,25 @@ Dies ist die wichtigste Invariante des gesamten Systems:
 | `mfi_divergence` | MFI Divergenz (Preis vs. Geldfluss) |
 | `vol_confirm` | Volumen-Bestätigung der Richtung |
 
-> ⚠️ **`bull_ob`/`bear_ob`, `cvd`, `obv` sind seit 2026-08-14 von `feature_vector()`/
-> `feature_vectors_bulk()` ausgeschlossen** (`features/engine.py::NON_CAUSAL_FEATURES`) und können
-> vom Optimizer nicht mehr als `entry_conditions`-Kandidaten gewählt werden:
-> - **`bull_ob`/`bear_ob`** (`structure.py::_order_blocks()`) markieren Kerze `j` erst dann als
->   Order Block, wenn eine **spätere** Kerze `i` (bis zu 5 Bars danach) den Impuls bestätigt — auf
->   der zuletzt geschlossenen Live-Kerze ist die Flag deshalb strukturell immer `False`, weil es
->   noch keine "5 Kerzen später" gibt. Der Backtester berechnet Features einmal über den kompletten
->   historischen DataFrame und "sieht" die Bestätigung — Lookahead-Bias. War mit t-Statistiken bis
->   61 eines der am häufigsten gewählten `must_have`-Features und der Hauptgrund, warum Live-Signal-
->   Checks über Wochen nichts fanden, während derselbe Bot-Spec im Backtest stark profitabel wirkte.
+> ⚠️ **`cvd`/`obv` sind seit 2026-08-14 von `feature_vector()`/`feature_vectors_bulk()`
+> ausgeschlossen** (`features/engine.py::NON_CAUSAL_FEATURES`) und können vom Optimizer nicht mehr
+> als `entry_conditions`-Kandidaten gewählt werden. `bull_ob`/`bear_ob` waren zwischenzeitlich
+> (2026-08-14, selber Tag) ebenfalls ausgeschlossen, sind aber seither wieder nutzbar — dazu unten
+> mehr, da das die interessantere Geschichte ist:
+> - **`bull_ob`/`bear_ob`** (`structure.py::_order_blocks()`) markierten in der ursprünglichen
+>   Fassung Kerze `j` erst dann als Order Block, wenn eine **spätere** Kerze `i` (bis zu 5 Bars
+>   danach) den Impuls bestätigte — auf der zuletzt geschlossenen Live-Kerze war die Flag deshalb
+>   strukturell immer `False`, weil es noch keine "5 Kerzen später" gab, während der Backtester
+>   (Features einmal über den kompletten historischen DataFrame berechnet) die Bestätigung "sah" —
+>   Lookahead-Bias. War mit t-Statistiken bis 61 eines der am häufigsten gewählten
+>   `must_have`-Features und der Hauptgrund, warum Live-Signal-Checks über Wochen nichts fanden,
+>   während derselbe Bot-Spec im Backtest stark profitabel wirkte. Statt das Feature nur
+>   auszuschließen, wurde `_order_blocks()` noch am selben Tag auf ein kausal gültiges Konzept
+>   umgestellt: eine Zone wird beim Impuls (Kerze `i`, nutzt nur Daten `<= i`, damit selbst schon
+>   kausal) bestätigt und bleibt bis zu `max_zone_age` Bars aktiv — `bull_ob`/`bear_ob` feuert jetzt,
+>   wenn eine **spätere** Kerze in diese bereits bestätigte Zone zurückläuft (Retest), nicht mehr auf
+>   der Ursprungskerze selbst. Per Test verifiziert: der Wert an Index `k` ändert sich nicht mehr,
+>   wenn man dem DataFrame nachträglich weitere Kerzen nach `k` hinzufügt (Definition von Kausalität).
 > - **`cvd`/`obv`** sind unbegrenzte laufende Summen ab Start des übergebenen DataFrames. Live wird
 >   nur mit den letzten ~250 Kerzen gerechnet (`utils/exchange.py::fetch_recent_ohlcv`), der Backtest
 >   über Jahre — kalibrierte `baseline_avg`-Schwellen liegen dadurch oft im Milliarden-Bereich und
