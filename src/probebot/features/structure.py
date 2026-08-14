@@ -34,7 +34,7 @@ def add_all_structure(df: pd.DataFrame, scale: float = 1.0) -> pd.DataFrame:
 
     # Order blocks (retest of a previously confirmed zone -- causal, see
     # _order_blocks() docstring)
-    ob = _order_blocks(df, lookback=sp(5, scale), max_zone_age=sp(100, scale))
+    ob = _order_blocks(df, lookback=sp(5, scale), max_zone_age=sp(50, scale))
     df['bull_ob'] = ob['bull'].astype(float)
     df['bear_ob'] = ob['bear'].astype(float)
 
@@ -206,7 +206,8 @@ def _fair_value_gaps(df: pd.DataFrame) -> dict:
 # ─── Order Blocks ─────────────────────────────────────────────────────────────
 
 def _order_blocks(df: pd.DataFrame, impulse_threshold: float = 0.015,
-                  lookback: int = 5, max_zone_age: int = 100) -> dict:
+                  lookback: int = 5, max_zone_age: int = 50,
+                  max_active_zones: int = 3) -> dict:
     """
     Order-block RETEST detection — causally valid, unlike a naive "is this
     candle currently an order block" flag (which needs `lookback` FUTURE
@@ -226,8 +227,21 @@ def _order_blocks(df: pd.DataFrame, impulse_threshold: float = 0.015,
     high/low range overlaps a still-active zone -- i.e. "price is right
     now retesting a previously confirmed order block", which is the actual
     real-time-tradeable form of this concept (entries are taken on the
-    retest/pullback, not on the impulse candle itself). Zones older than
-    `max_zone_age` bars are dropped as stale.
+    retest/pullback, not on the impulse candle itself).
+
+    First version of this (2026-08-14, same day) kept every zone alive for
+    up to 100 bars with no cap on how many could stack up -- on real 30m
+    crypto data that meant 40+ simultaneously active zones blanketing
+    almost the whole recent price range, so "retest" fired on ~70% of
+    candles. A signal that common carries ~no information (nothing
+    validated as an edge afterwards) -- not proof there's no edge, proof
+    the feature was too blunt to find one. Two changes to keep it a rare,
+    specific event like a real order-block retest: a zone is MITIGATED
+    (removed) the first time price touches it (in real trading the retest
+    is the trade -- a zone that's already been tested isn't a fresh signal
+    anymore), and at most `max_active_zones` per direction are tracked at
+    once (oldest dropped first), instead of letting them accumulate
+    unbounded. `max_zone_age` still ages out zones nobody retested in time.
     """
     n = len(df)
     bull_ob = np.zeros(n, dtype=bool)
@@ -245,15 +259,18 @@ def _order_blocks(df: pd.DataFrame, impulse_threshold: float = 0.015,
         active_bear = [z for z in active_bear if i - z[0] <= max_zone_age]
 
         # Retest check at candle i, using only zones confirmed on a
-        # strictly earlier candle -- causal.
+        # strictly earlier candle -- causal. First touch mitigates
+        # (consumes) the zone so it can't keep firing True forever.
         hi_i, lo_i = high[i], low[i]
-        for _, z_lo, z_hi in active_bull:
+        for k, (_, z_lo, z_hi) in enumerate(active_bull):
             if lo_i <= z_hi and hi_i >= z_lo:
                 bull_ob[i] = True
+                del active_bull[k]
                 break
-        for _, z_lo, z_hi in active_bear:
+        for k, (_, z_lo, z_hi) in enumerate(active_bear):
             if lo_i <= z_hi and hi_i >= z_lo:
                 bear_ob[i] = True
+                del active_bear[k]
                 break
 
         # New zone confirmation using candle i's own close -- also causal,
@@ -264,11 +281,15 @@ def _order_blocks(df: pd.DataFrame, impulse_threshold: float = 0.015,
             for j in range(i - 1, max(i - lookback, 0), -1):
                 if close[j] < open_[j]:  # bearish candle -> bull OB zone
                     active_bull.append((i, low[j], high[j]))
+                    if len(active_bull) > max_active_zones:
+                        active_bull.pop(0)
                     break
         elif move < -impulse_threshold:
             for j in range(i - 1, max(i - lookback, 0), -1):
                 if close[j] > open_[j]:  # bullish candle -> bear OB zone
                     active_bear.append((i, low[j], high[j]))
+                    if len(active_bear) > max_active_zones:
+                        active_bear.pop(0)
                     break
 
     return {
