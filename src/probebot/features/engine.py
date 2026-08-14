@@ -8,6 +8,31 @@ from .structure import add_all_structure
 from .volume import add_all_volume
 from .scaling import timeframe_scale, sp
 
+# Columns that must never be offered as forensics/entry-condition candidates
+# via feature_vector()/feature_vectors_bulk(), even though they're valid
+# intermediate columns other features derive from:
+#
+# - 'cvd', 'obv': unbounded running cumsum from wherever the passed-in df
+#   happens to start. A live signal check only fetches the last ~250 candles
+#   (utils/exchange.py::fetch_recent_ohlcv), so these restart near zero every
+#   run, while forensics/backtests compute them over years of history —
+#   baseline_avg values calibrated in bot_spec entry_conditions run into the
+#   hundreds of thousands to billions and can never be reached live. Any
+#   move_type using them as a condition is permanently dead in live trading
+#   regardless of real market state. (Their derived, translation-invariant
+#   siblings cvd_slope/cvd_divergence/obv_slope/obv_z stay eligible.)
+# - 'bull_ob', 'bear_ob': structure.py::_order_blocks() flags candle j as an
+#   order block only once a LATER candle i (up to `lookback` bars ahead)
+#   confirms the impulse — i.e. it looks into the future relative to j. On
+#   the most-recently-closed live candle there is no future candle yet, so
+#   this flag is structurally always False/0.0 live, no matter what — while
+#   a backtest computing features once over the whole historical df "sees"
+#   the confirmation. This was one of the most common must_have features in
+#   deployed bot_specs (huge t-statistics, since it's a near-tautological
+#   lookahead), and explains live signal checks finding nothing for weeks
+#   while the same config backtests as strongly profitable over that period.
+NON_CAUSAL_FEATURES = {'cvd', 'obv', 'bull_ob', 'bear_ob'}
+
 
 def compute_all_features(df: pd.DataFrame, min_candles: int = 200, verbose: bool = True,
                           timeframe: str = '1h', scale_multiplier: float = 1.0) -> pd.DataFrame:
@@ -68,7 +93,7 @@ def feature_vector(df: pd.DataFrame, idx: int) -> dict:
     """
     row = df.iloc[idx]
     # Only include numeric, non-index columns
-    skip = {'timestamp', 'open', 'high', 'low', 'close', 'volume'}
+    skip = {'timestamp', 'open', 'high', 'low', 'close', 'volume'} | NON_CAUSAL_FEATURES
     result = {}
     for col in df.columns:
         if col in skip:
@@ -101,7 +126,7 @@ def feature_vectors_bulk(df: pd.DataFrame, indices: list) -> list:
 
     Reihenfolge der Rueckgabe entspricht der Reihenfolge von `indices`.
     """
-    skip = {'timestamp', 'open', 'high', 'low', 'close', 'volume'}
+    skip = {'timestamp', 'open', 'high', 'low', 'close', 'volume'} | NON_CAUSAL_FEATURES
     cols = [c for c in df.columns if c not in skip and (
         pd.api.types.is_numeric_dtype(df[c]) or pd.api.types.is_bool_dtype(df[c])
     )]
