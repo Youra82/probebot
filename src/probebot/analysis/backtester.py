@@ -348,7 +348,11 @@ def run_backtest(
     # Millionenbereich moeglich).
     if len(pnls) > 1:
         std_pnl = float(np.std(pnls))
-        sharpe  = mean_pnl / std_pnl * (n_trades ** 0.5) if std_pnl > 0 else 0.0
+        # Bei (fast) identischen PnLs (z.B. mehrere TP-Treffer mit gleicher
+        # Groesse) ist std_pnl nur noch Floating-Point-Rauschen -- relativ zum
+        # mean_pnl geprueft, sonst explodiert Sharpe wieder ins Absurde.
+        min_std = max(abs(mean_pnl) * 1e-6, 1e-9)
+        sharpe  = mean_pnl / std_pnl * (n_trades ** 0.5) if std_pnl > min_std else 0.0
     else:
         sharpe = 0.0
 
