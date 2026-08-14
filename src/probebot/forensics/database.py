@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -14,13 +15,35 @@ _ARTIFACTS_ROOT = (
 )
 DB_PATH = _ARTIFACTS_ROOT / "artifacts" / "db" / "forensics.db"
 
+# Setting up WAL mode (PRAGMA + first writes) has been observed to fail
+# transiently with "disk I/O error" on WSL2 (real-time AV scanning the
+# VHDX-backed disk while SQLite creates the -wal/-shm sidecar files is a
+# known trigger) even though the same call succeeds moments later on a
+# retry -- not a real corruption, just a momentary I/O hiccup. Retry the
+# whole connect+setup a few times before giving up for real.
+_SETUP_RETRIES = 5
+_SETUP_RETRY_BASE_DELAY = 0.5  # seconds, doubles each attempt
+
 
 class ForensicsDB:
     def __init__(self, db_path: Path = DB_PATH):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(db_path))
-        self.conn.row_factory = sqlite3.Row
-        self._setup()
+        last_err = None
+        for attempt in range(_SETUP_RETRIES):
+            try:
+                self.conn = sqlite3.connect(str(db_path))
+                self.conn.row_factory = sqlite3.Row
+                self._setup()
+                return
+            except sqlite3.OperationalError as e:
+                last_err = e
+                try:
+                    self.conn.close()
+                except Exception:
+                    pass
+                if attempt < _SETUP_RETRIES - 1:
+                    time.sleep(_SETUP_RETRY_BASE_DELAY * (2 ** attempt))
+        raise last_err
 
     def _setup(self):
         c = self.conn
