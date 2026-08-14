@@ -301,8 +301,27 @@ Wenn sich die Berechnung eines Features ändert (z.B. der `NON_CAUSAL_FEATURES`-
 dem alten Feature-Code berechnet wurden. Sauberster Weg: kompletter Reset, dann alle
 Symbol/Timeframe-Kombinationen neu durch Phase 1 + Phase 2 laufen lassen.
 
+**Für viele Kombinationen (mehr als eine Handvoll): `rescan_all.sh` statt `run_pipeline.sh`.**
+`run_pipeline.sh` ist interaktiv (`read -p`-Prompts) — bei zig Kombinationen über mehrere
+Batches hinweg Antworten pastet man sich leicht in der Reihenfolge/Anzahl der Zeilen, was den
+Lauf lautlos verhaspelt (Symbol landet z.B. als Datenmüll in einem falschen Prompt). `rescan_all.sh`
+ruft `probebot.run` (Phase 1) + `probebot.analysis.optimizer` (Phase 2) direkt und komplett
+non-interaktiv auf, ist resumable (überspringt Kombinationen mit bereits vorhandener
+`config_*.json`, außer mit `--force`) und eignet sich für lange Läufe im Hintergrund:
+
 ```bash
 cd probebot   # auf der Trainingsmaschine, NICHT auf dem Live-VPS
+nohup bash rescan_all.sh --reset > logs/rescan_all.log 2>&1 &
+tail -f logs/rescan_all.log
+```
+
+Symbol- und Timeframe-Liste stehen oben im Skript (`SYMBOLS_SHORT` / `TIMEFRAMES`) und lassen sich
+dort anpassen. Nach einem Abbruch (SSH-Disconnect etc.) einfach ohne `--reset` erneut starten —
+bereits fertige Kombinationen werden übersprungen.
+
+Alternativ manuell über `run_pipeline.sh` (nur für einzelne/wenige Kombinationen empfehlenswert):
+
+```bash
 bash run_pipeline.sh
 ```
 
