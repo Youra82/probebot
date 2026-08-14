@@ -39,11 +39,21 @@ class OutOfSampleValidator:
         for mtype, ranked_or_dict in correlations.items():
             # Support both old (list) and new (dict with 'rows') format
             ranked = ranked_or_dict.get('rows', ranked_or_dict) if isinstance(ranked_or_dict, dict) else ranked_or_dict
-            # Nur starke Trainings-Signale als Validierungsbedingungen
+            # Nur starke Trainings-Signale als Validierungsbedingungen. Das ist
+            # nur die Vorauswahl fuer "darf ueberhaupt zur OOS-Pruefung antreten",
+            # NICHT die eigentliche Abnahme-Schwelle (die kommt aus
+            # _reliability_label() unten, unveraendert). Frueher t>=3.5/hit>=35 --
+            # bevor bull_ob/bear_ob als Lookahead-Bug identifiziert wurde (siehe
+            # NON_CAUSAL_FEATURES in features/engine.py), lag praktisch immer ein
+            # Feature mit t~40-60 und hoher Hit-Rate vor, das diese Schwelle
+            # muehelos uebersprang -- jetzt faellt oft der komplette Move-Type
+            # schon HIER raus, bevor er ueberhaupt eine OOS-Chance bekommt, obwohl
+            # mehrere Bedingungen nur hauchduenn darunter liegen (z.B. t=3.48
+            # statt 3.5, hit=34.8% statt 35%). Leicht gelockert.
             must_have = [
                 r for r in ranked
-                if abs(r.get('t_statistic', 0)) >= 3.5
-                and r.get('predictive_pct', 0) >= 35
+                if abs(r.get('t_statistic', 0)) >= 3.0
+                and r.get('predictive_pct', 0) >= 30
             ][:6]
             if not must_have:
                 continue

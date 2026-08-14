@@ -114,13 +114,20 @@ def select_strategy(move_stats: dict, correlations: dict, movements: list,
         strategy = 'HYBRID'
 
     # Tradeable types: only ROBUST or STABIL from OOS validation, with enough
-    # training samples that the label itself isn't a small-sample fluke.
+    # training AND test samples that the label itself isn't a small-sample
+    # fluke. n_train>=20 existed before; n_test>=20 is new -- recall_pct/
+    # precision_pct/degradation feed straight into _reliability_label()
+    # with no sample-size awareness of their own (validator.py), so e.g.
+    # n_test=1 can trivially read as 100%/100%/0% (a coin flip landing
+    # heads) and get labeled ROBUST on pure noise.
     tradeable = []
     if validation_results:
         for mtype, vr in validation_results.items():
             rl = vr.get('reliability', {})
             label = rl.get('label', '') if isinstance(rl, dict) else str(rl)
-            if label in ('ROBUST', 'STABIL') and vr.get('n_train', 0) >= 20:
+            if (label in ('ROBUST', 'STABIL')
+                    and vr.get('n_train', 0) >= 20
+                    and vr.get('n_test', 0) >= 20):
                 direction = 'LONG' if ('UP' in mtype) else 'SHORT'
                 tradeable.append({'move_type': mtype, 'direction': direction})
 

@@ -111,10 +111,13 @@ def _build_oos_section(validation_results: dict) -> dict:
             'use_in_bot':     (
                 rl.get('label') in ('ROBUST', 'STABIL') and
                 vr.get('precision_pct', 0) >= 10 and
-                vr.get('n_train', 0) >= 20
+                vr.get('n_train', 0) >= 20 and
+                vr.get('n_test', 0) >= 20
             ),
             'use_in_bot_excluded_reason': (
                 'n_train < 20' if vr.get('n_train', 0) < 20 else
+                'n_test < 20 (zu wenige OOS-Events fuer eine verlaessliche Aussage)'
+                    if vr.get('n_test', 0) < 20 else
                 'precision < 10%' if vr.get('precision_pct', 0) < 10 else
                 None
             ),

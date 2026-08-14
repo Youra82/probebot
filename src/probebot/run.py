@@ -354,7 +354,8 @@ def main():
                 _vr['n_train'] = sum(1 for m in _mv_train if m.move_type == _mt)
 
         _usable = [vr for vr in _val_results.values()
-                   if vr['reliability']['label'] in ('ROBUST', 'STABIL') and vr.get('n_train', 0) >= 20]
+                   if vr['reliability']['label'] in ('ROBUST', 'STABIL')
+                   and vr.get('n_train', 0) >= 20 and vr.get('n_test', 0) >= 20]
         _best_prec = max((vr.get('precision_pct', 0) for vr in _usable), default=0.0)
         _result.update({
             'correlations': _corr, 'correlations_meta': _corr_meta, 'clusters': _clusters,
@@ -438,7 +439,8 @@ def main():
     bot_cnt    = sum(1 for vr in validation_results.values()
                       if vr['reliability']['label'] in ('ROBUST', 'STABIL')
                       and vr.get('precision_pct', 0) >= 10
-                      and vr.get('n_train', 0) >= 20)
+                      and vr.get('n_train', 0) >= 20
+                      and vr.get('n_test', 0) >= 20)
     if not quiet:
         if validation_results:
             print(f"\n[4b] Out-of-Sample Validierung ({len(movements_test)} Test-Events ab {split_date})...")
